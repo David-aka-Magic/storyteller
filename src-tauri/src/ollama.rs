@@ -1,0 +1,258 @@
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tauri::{State, AppHandle, Manager};
+use std::sync::Mutex;
+use std::time::Duration;
+use std::fs;
+use std::path::PathBuf;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Chat {
+    pub id: u64,
+    pub title: String,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CharacterInfo {
+    pub name: String,
+    pub age: u32,
+    pub gender: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SdJson {
+    pub name: String,
+    pub view: String,
+    #[serde(default)]
+    pub features: String,
+    #[serde(default)]
+    pub action_context: String,
+    #[serde(default)]
+    pub clothing: String,
+    pub look: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct StoryResponse {
+    pub story: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sd_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sd_details: Option<SdJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaApiWrapper {
+    response: Option<String>,
+    done: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SerializableOllamaState {
+    chats: Vec<Chat>,
+    current_chat_id: u64,
+    next_chat_id: u64,
+}
+
+pub struct OllamaState {
+    pub client: Client,
+    pub base_url: String,
+    pub chats: Mutex<Vec<Chat>>,
+    pub current_chat_id: Mutex<u64>,
+    pub next_chat_id: Mutex<u64>,
+}
+
+impl OllamaState {
+    pub fn new(app: &AppHandle) -> Self {
+        match Self::load(app) {
+            Ok(s) => s,
+            _ => {
+                let id = 1;
+                Self {
+                    client: Client::builder().timeout(Duration::from_secs(180)).build().unwrap(),
+                    base_url: "http://localhost:11434".to_string(),
+                    chats: Mutex::new(vec![Chat { id, title: "New Chat".to_string(), messages: vec![] }]),
+                    current_chat_id: Mutex::new(id),
+                    next_chat_id: Mutex::new(id + 1),
+                }
+            }
+        }
+    }
+
+    fn save_path(app: &AppHandle) -> Result<PathBuf, String> {
+        let dir = app.path().app_data_dir().map_err(|e| format!("{}", e))?;
+        if !dir.exists() {
+            fs::create_dir_all(&dir).map_err(|e| format!("{}", e))?;
+        }
+        Ok(dir.join("chats.json"))
+    }
+
+    pub fn load(app: &AppHandle) -> Result<Self, String> {
+        let path = Self::save_path(app)?;
+        let data = fs::read_to_string(&path).map_err(|e| format!("{}", e))?;
+        let st: SerializableOllamaState = serde_json::from_str(&data).map_err(|e| format!("{}", e))?;
+        Ok(Self {
+            client: Client::builder().timeout(Duration::from_secs(180)).build().unwrap(),
+            base_url: "http://localhost:11434".to_string(),
+            chats: Mutex::new(st.chats),
+            current_chat_id: Mutex::new(st.current_chat_id),
+            next_chat_id: Mutex::new(st.next_chat_id),
+        })
+    }
+
+    pub fn save(&self, app: &AppHandle) -> Result<(), String> {
+        let p = Self::save_path(app)?;
+        let chats = self.chats.lock().map_err(|e| format!("{}", e))?.clone();
+        let cid = *self.current_chat_id.lock().map_err(|e| format!("{}", e))?;
+        let nid = *self.next_chat_id.lock().map_err(|e| format!("{}", e))?;
+        let st = SerializableOllamaState { chats, current_chat_id: cid, next_chat_id: nid };
+        let s = serde_json::to_string_pretty(&st).map_err(|e| format!("{}", e))?;
+        fs::write(&p, s).map_err(|e| format!("{}", e))
+    }
+
+    fn build_context(&self, prompt: String) -> Result<String, String> {
+        let id = *self.current_chat_id.lock().map_err(|e| format!("{}", e))?;
+        let chats = self.chats.lock().map_err(|e| format!("{}", e))?;
+        let chat = chats.iter().find(|c| c.id == id).ok_or("no chat".to_string())?;
+        let mut x = String::new();
+        for m in chat.messages.iter() {
+            let r = if m.role == "user" { "user" } else { "assistant" };
+            x.push_str(&format!("<|start_header_id|>{}<|end_header_id|>\n\n{}<|eot_id|>", r, m.content));
+        }
+        x.push_str(&format!("<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n", prompt));
+        Ok(x)
+    }
+}
+
+fn extract_json(text: &str) -> Option<String> {
+    if let Some(s) = text.find('{') {
+        let mut c = 0;
+        let mut st = false;
+        let mut esc = false;
+        for (i, ch) in text[s..].char_indices() {
+            match ch {
+                '{' if !st => c += 1,
+                '}' if !st => {
+                    c -= 1;
+                    if c == 0 {
+                        let e = s + i + 1;
+                        return Some(text[s..e].to_string());
+                    }
+                }
+                '"' if !esc => st = !st,
+                '\\' => esc = !esc,
+                _ => esc = false,
+            }
+        }
+    }
+    None
+}
+
+fn extract_story(v: &serde_json::Value) -> String {
+    if let Some(s) = v.get("story_json") {
+        if let Some(r) = s.get("response").and_then(|v| v.as_str()) {
+            return r.to_string();
+        }
+        if let Some(t) = s.as_str() {
+            return t.to_string();
+        }
+    }
+    if let Some(t) = v.get("response").and_then(|v| v.as_str()) {
+        return t.to_string();
+    }
+    serde_json::to_string(v).unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn get_chat_list(state: State<'_, OllamaState>) -> Result<Vec<Chat>, String> {
+    let c = state.chats.lock().map_err(|e| format!("{}", e))?;
+    Ok(c.iter().map(|x| Chat { id: x.id, title: x.title.clone(), messages: vec![] }).collect())
+}
+
+#[tauri::command]
+pub fn load_chat(id: u64, state: State<'_, OllamaState>) -> Result<Vec<Message>, String> {
+    let mut c = state.chats.lock().map_err(|e| format!("{}", e))?;
+    if let Some(ch) = c.iter().find(|x| x.id == id) {
+        *state.current_chat_id.lock().map_err(|e| format!("{}", e))? = id;
+        Ok(ch.messages.clone())
+    } else {
+        Err("not found".into())
+    }
+}
+
+#[tauri::command]
+pub fn new_chat(state: State<'_, OllamaState>) -> Result<u64, String> {
+    let mut n = state.next_chat_id.lock().map_err(|e| format!("{}", e))?;
+    let id = *n;
+    *n += 1;
+    let mut c = state.chats.lock().map_err(|e| format!("{}", e))?;
+    c.push(Chat { id, title: "New Chat".into(), messages: vec![] });
+    *state.current_chat_id.lock().map_err(|e| format!("{}", e))? = id;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn clear_history(state: State<'_, OllamaState>) {
+    if let Ok(id) = state.current_chat_id.lock().map(|g| *g) {
+        if let Ok(mut c) = state.chats.lock() {
+            if let Some(ch) = c.iter_mut().find(|x| x.id == id) {
+                ch.messages.clear();
+                ch.title = "New Chat".into();
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn generate_story(prompt: String, state: State<'_, OllamaState>) -> Result<serde_json::Value, String> {
+    let url = format!("{}/api/generate", state.base_url);
+    let full = state.build_context(prompt.clone())?;
+    let body = json!({ "model": "Story_v27", "prompt": full, "stream": false });
+
+    let r: reqwest::Response = state.client.post(url).json(&body).send().await.map_err(|e| e.to_string())?;
+    let text: String = r.text().await.map_err(|e| e.to_string())?;
+    let val: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let resp = val["response"].as_str().ok_or_else(|| "no resp".to_string())?;
+
+    let hist;
+    let out;
+
+    if let Some(j) = extract_json(resp) {
+        hist = j.clone();
+        let v: serde_json::Value = serde_json::from_str(&j).map_err(|e| e.to_string())?;
+        let story = extract_story(&v);
+        let sd = v.get("sd_json").and_then(|x| serde_json::from_value::<SdJson>(x.clone()).ok());
+        let sr = StoryResponse {
+            story,
+            sd_prompt: sd.as_ref().map(|x| x.look.clone()),
+            sd_details: sd,
+        };
+        out = serde_json::to_value(sr).map_err(|e| e.to_string())?;
+    } else {
+        hist = resp.to_string();
+        out = json!({"text": resp, "type": "phase1"});
+    }
+
+    if let Ok(id) = state.current_chat_id.lock().map(|g| *g) {
+        if let Ok(mut c) = state.chats.lock() {
+            if let Some(ch) = c.iter_mut().find(|x| x.id == id) {
+                if ch.messages.is_empty() {
+                    let t = prompt.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
+                    ch.title = if t.is_empty() { "New Chat".into() } else { t };
+                }
+                ch.messages.push(Message { role: "user".into(), content: prompt.clone() });
+                ch.messages.push(Message { role: "assistant".into(), content: hist });
+            }
+        }
+    }
+
+    Ok(out)
+}
