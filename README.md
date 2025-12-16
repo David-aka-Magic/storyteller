@@ -1,7 +1,9 @@
-# Tauri + SvelteKit + TypeScript
+Install ollama, go into terminal and type ollama serve.
+Make a folder named AI and open terminal in it.
+  Enter: git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git
+Open the file downloaded, go to models -> Stable-diffusion
+  Download https://civitai.com/models/257749/pony-diffusion-v6-xl and put it in the folder.
+Go back to the stable-diffusion-webui and open the webui-user .bat file.
+  Change the setcommandline line to this COMMANDLINE_ARGS=--api --xformers
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
-
-## Recommended IDE Setup
-
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+After that is done run it. It will take some time so grab a drink or something.
