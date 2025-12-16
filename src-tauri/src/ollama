@@ -97,6 +97,9 @@ impl OllamaState {
 
     pub fn load(app: &AppHandle) -> Result<Self, String> {
         let path = Self::save_path(app)?;
+        if !path.exists() {
+            return Err("File doesn't exist".into());
+        }
         let data = fs::read_to_string(&path).map_err(|e| format!("{}", e))?;
         let st: SerializableOllamaState = serde_json::from_str(&data).map_err(|e| format!("{}", e))?;
         Ok(Self {
@@ -179,12 +182,12 @@ pub fn get_chat_list(state: State<'_, OllamaState>) -> Result<Vec<Chat>, String>
 
 #[tauri::command]
 pub fn load_chat(id: u64, state: State<'_, OllamaState>) -> Result<Vec<Message>, String> {
-    let mut c = state.chats.lock().map_err(|e| format!("{}", e))?;
+    let c = state.chats.lock().map_err(|e| format!("{}", e))?;
     if let Some(ch) = c.iter().find(|x| x.id == id) {
         *state.current_chat_id.lock().map_err(|e| format!("{}", e))? = id;
         Ok(ch.messages.clone())
     } else {
-        Err("not found".into())
+        Err("Chat not found".into())
     }
 }
 
@@ -200,15 +203,62 @@ pub fn new_chat(state: State<'_, OllamaState>) -> Result<u64, String> {
 }
 
 #[tauri::command]
-pub fn clear_history(state: State<'_, OllamaState>) {
-    if let Ok(id) = state.current_chat_id.lock().map(|g| *g) {
-        if let Ok(mut c) = state.chats.lock() {
-            if let Some(ch) = c.iter_mut().find(|x| x.id == id) {
-                ch.messages.clear();
-                ch.title = "New Chat".into();
-            }
+pub fn clear_history(state: State<'_, OllamaState>) -> Result<(), String> {
+    let id = *state.current_chat_id.lock().map_err(|e| format!("{}", e))?;
+    let mut c = state.chats.lock().map_err(|e| format!("{}", e))?;
+    if let Some(ch) = c.iter_mut().find(|x| x.id == id) {
+        ch.messages.clear();
+        ch.title = "New Chat".into();
+        Ok(())
+    } else {
+        Err("Current chat not found".into())
+    }
+}
+
+#[tauri::command]
+pub fn delete_chats(ids: Vec<u64>, state: State<'_, OllamaState>, app: AppHandle) -> Result<bool, String> {
+    let mut chats = state.chats.lock().map_err(|e| format!("{}", e))?;
+    
+    if ids.is_empty() {
+        return Ok(false);
+    }
+    
+    // Keep chats that are NOT in the deletion list
+    let original_len = chats.len();
+    chats.retain(|chat| !ids.contains(&chat.id));
+    
+    // Check if current chat was deleted
+    let mut current_id = state.current_chat_id.lock().map_err(|e| format!("{}", e))?;
+    if ids.contains(&*current_id) {
+        // Set current chat to first available or create new one
+        if let Some(first_chat) = chats.first() {
+            *current_id = first_chat.id;
+        } else {
+            // No chats left, create a new one
+            let new_id = 1;
+            chats.push(Chat { 
+                id: new_id, 
+                title: "New Chat".into(), 
+                messages: vec![] 
+            });
+            *current_id = new_id;
         }
     }
+    
+    // Update next_chat_id (max ID + 1)
+    let mut next_id = state.next_chat_id.lock().map_err(|e| format!("{}", e))?;
+    let max_id = chats.iter().map(|c| c.id).max().unwrap_or(0);
+    *next_id = max_id + 1;
+    
+    // Drop locks before saving
+    drop(chats);
+    drop(current_id);
+    drop(next_id);
+    
+    // Save changes
+    state.save(&app)?;
+    
+    Ok(original_len > 0 && ids.len() > 0)
 }
 
 #[tauri::command]
@@ -220,7 +270,7 @@ pub async fn generate_story(prompt: String, state: State<'_, OllamaState>) -> Re
     let r: reqwest::Response = state.client.post(url).json(&body).send().await.map_err(|e| e.to_string())?;
     let text: String = r.text().await.map_err(|e| e.to_string())?;
     let val: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let resp = val["response"].as_str().ok_or_else(|| "no resp".to_string())?;
+    let resp = val["response"].as_str().ok_or_else(|| "no response".to_string())?;
 
     let hist;
     let out;
@@ -241,17 +291,15 @@ pub async fn generate_story(prompt: String, state: State<'_, OllamaState>) -> Re
         out = json!({"text": resp, "type": "phase1"});
     }
 
-    if let Ok(id) = state.current_chat_id.lock().map(|g| *g) {
-        if let Ok(mut c) = state.chats.lock() {
-            if let Some(ch) = c.iter_mut().find(|x| x.id == id) {
-                if ch.messages.is_empty() {
-                    let t = prompt.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
-                    ch.title = if t.is_empty() { "New Chat".into() } else { t };
-                }
-                ch.messages.push(Message { role: "user".into(), content: prompt.clone() });
-                ch.messages.push(Message { role: "assistant".into(), content: hist });
-            }
+    let id = *state.current_chat_id.lock().map_err(|e| format!("{}", e))?;
+    let mut c = state.chats.lock().map_err(|e| format!("{}", e))?;
+    if let Some(ch) = c.iter_mut().find(|x| x.id == id) {
+        if ch.messages.is_empty() {
+            let t = prompt.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
+            ch.title = if t.is_empty() { "New Chat".into() } else { t };
         }
+        ch.messages.push(Message { role: "user".into(), content: prompt.clone() });
+        ch.messages.push(Message { role: "assistant".into(), content: hist });
     }
 
     Ok(out)
