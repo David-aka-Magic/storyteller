@@ -1,53 +1,55 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
 mod models;
-mod utils;
 mod state;
-mod commands;
+mod utils;
+mod commands; 
 
 use state::OllamaState;
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let handle: AppHandle = app.handle().clone();
+            let handle = app.handle();
             
-            app.manage(OllamaState::new(&handle));
-            
-            let win = handle.get_webview_window("main").unwrap();
-            let h = handle.clone();
-            
-            win.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    let st = h.state::<OllamaState>();
-                    let _ = st.save(&h);
-                }
+            // Initialize the SQLite-backed state asynchronously
+            tauri::async_runtime::block_on(async move {
+                let state = OllamaState::new(&handle).await;
+                handle.manage(state);
             });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             // Core Chat
-            commands::generate_story,
-            commands::regenerate_story,
-            commands::clear_history,
-            commands::new_chat,
-            commands::load_chat,
-            commands::get_chat_list,
-            commands::delete_chats,
+            commands::chat::generate_story,
+            commands::chat::regenerate_story,
+            commands::chat::set_chat_character,
+            commands::chat::clear_history,
+            commands::chat::new_chat,
+            commands::chat::load_chat,
+            commands::chat::get_chat_list,
+            commands::chat::delete_chats,
             
             // Story Premises
-            commands::save_story_premise,
-            commands::delete_stories,
-            commands::get_story_list,
+            commands::story::save_story_premise,
+            commands::story::delete_stories,
+            commands::story::get_story_list,
             
             // Characters
-            commands::save_character,
-            commands::delete_character,
-            commands::get_character_list,
+            commands::chat::save_character,
+            commands::chat::delete_character,
+            commands::chat::get_character_list,
             
             // Image Generation
-            commands::generate_image
+            commands::chat::generate_image,
+            commands::chat::generate_image_variation,
+            commands::chat::generate_character_portrait
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

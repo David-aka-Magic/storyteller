@@ -5,9 +5,11 @@
 
   export let messages: ChatMessage[] = [];
   export let isLoading: boolean = false;
-  export let currentChatId: number; // NEW PROP
+  export let currentChatId: number;
+  export let activeCharacterId: string | null = null; 
 
   let generatingImages = new Set<number>();
+
   let messageInput = "";
   const dispatch = createEventDispatcher();
 
@@ -25,17 +27,25 @@
   }
 
   async function regenerateText() {
-     if (isLoading) return;
-     isLoading = true;
-     if (messages.length > 0 && messages[messages.length - 1].sender === 'ai') {
+    if (isLoading) return;
+    isLoading = true;
+    
+    if (messages.length > 0 && messages[messages.length - 1].sender === 'ai') {
         messages = messages.slice(0, -1);
-     }
-     try {
+    }
+
+    try {
         const response = await invoke('regenerate_story');
-        let newAiMsg: ChatMessage = { id: Date.now(), text: '', sender: 'ai' };
         
+        let newAiMsg: ChatMessage = {
+            id: Date.now(), 
+            text: '',
+            sender: 'ai',
+            data: undefined
+        };
+
         if (response && typeof response === 'object') {
-             if ('type' in response && (response as any).type === 'phase1') {
+            if ('type' in response && (response as any).type === 'phase1') {
                 newAiMsg.text = (response as Phase1Response).text;
             } else if ('story' in response) {
                 newAiMsg.text = ""; 
@@ -44,10 +54,14 @@
         } else if (typeof response === 'string') {
             newAiMsg.text = response;
         }
+
         messages = [...messages, newAiMsg];
-     } catch (e) {
-        console.error(e);
-     } finally { isLoading = false; }
+    } catch (e) {
+        console.error("Regenerate failed:", e);
+        messages = [...messages, { id: Date.now(), text: `Error regenerating: ${e}`, sender: 'ai' }];
+    } finally {
+        isLoading = false;
+    }
   }
 
   async function generateImage(msg: ChatMessage, index: number) {
@@ -61,15 +75,27 @@
     generatingImages = generatingImages; 
 
     try {
-        const base64 = await invoke('generate_image', { 
-            prompt: promptToUse,
-            chatId: currentChatId,
-            msgIndex: index
-        });
+        let base64 = "";
+
+        if (msg.image) {
+             base64 = await invoke('generate_image_variation', { 
+                prompt: promptToUse,
+                sourceImage: msg.image,
+                chatId: currentChatId,
+                msgIndex: index
+            }) as string;
+        } else {
+            base64 = await invoke('generate_image', { 
+                prompt: promptToUse,
+                chatId: currentChatId,
+                msgIndex: index,
+                characterId: activeCharacterId
+            }) as string;
+        }
         
         const msgIdx = messages.findIndex(m => m.id === msg.id);
         if (msgIdx !== -1) {
-            messages[msgIdx].image = base64 as string;
+            messages[msgIdx].image = base64;
             messages = messages; 
         }
     } catch (e) {
@@ -91,7 +117,10 @@
 
 <div class="chat-main">
   <div class="header">
-      <h1>AI Story Writer</h1>
+      <div class="header-left">
+        <h1>AI Story Writer</h1>
+      </div>
+
       <button 
         type="button"
         on:click={() => dispatch('clearChat')} 
@@ -179,7 +208,10 @@
 
 <style>
   .chat-main { flex: 1; display: flex; flex-direction: column; height: 100%; background: #fff; }
+  
   .header { padding: 15px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; background: #fcfcfc; }
+  .header-left { display: flex; align-items: center; gap: 15px; }
+  
   h1 { margin: 0; font-size: 1.2em; color: #333; }
 
   .clear-btn { background: #ff4d4d; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
