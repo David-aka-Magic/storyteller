@@ -4,44 +4,50 @@ use serde::{Deserialize, Serialize};
 pub struct Message {
     pub role: String,
     pub content: String,
-    #[serde(default)] 
+    #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Chat {
-    pub id: u64,
+    pub id: i64,
     pub title: String,
     pub messages: Vec<Message>,
-    #[serde(default)] 
-    pub character_id: Option<String>,
+    #[serde(default)]
+    pub character_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatResponse {
+    pub id: i64,
+    pub title: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CharacterProfile {
-    pub id: String,
+    pub id: i64,
     pub name: String,
-    pub age: u32,
-    pub gender: String,
-    pub skin_tone: String,
-    pub hair_style: String,
-    pub hair_color: String,
-    pub body_type: String,
-    pub personality: String,
-    pub additional_notes: String,
-    pub sd_prompt: String,
+    pub age: Option<i32>,
+    pub gender: Option<String>,
+    pub skin_tone: Option<String>,
+    pub hair_style: Option<String>,
+    pub hair_color: Option<String>,
+    pub body_type: Option<String>,
+    pub personality: Option<String>,
+    pub additional_notes: Option<String>,
+    pub sd_prompt: Option<String>,
     #[serde(default)]
     pub image: Option<String>,
     #[serde(default)]
     pub seed: Option<i64>,
-    #[serde(default)] 
-    pub art_style: String,
+    #[serde(default)]
+    pub art_style: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StoryPremise {
-    pub id: String,
+    pub id: i64,
     pub title: String,
     pub description: String,
 }
@@ -78,7 +84,7 @@ pub struct SDRequest {
     pub cfg_scale: f32,
     pub sampler_name: String,
     pub batch_size: u32,
-    #[serde(default)] 
+    #[serde(default)]
     pub seed: i64,
 }
 

@@ -11,8 +11,8 @@
 
   const styles = ["Realistic", "Anime", "3D", "Painting", "Sketch"];
 
-  const getEmptyForm = () => ({
-    id: crypto.randomUUID(),
+  const getEmptyForm = (): CharacterProfile => ({
+    id: crypto.randomUUID() as `${string}-${string}-${string}-${string}-${string}`,
     name: '',
     age: 25,
     gender: 'Female',
@@ -23,41 +23,97 @@
     personality: 'Brave and curious',
     additional_notes: '',
     sd_prompt: '',
-    image: undefined as string | undefined, 
-    seed: undefined as number | undefined,
+    image: undefined,
+    seed: undefined,
     art_style: "Realistic"
   });
 
-  let form = getEmptyForm();
+  let form: CharacterProfile = getEmptyForm();
 
-  // FIX: Track the previous state of 'show' to ensure we only run this ONCE when opening
+  // Track the previous state of 'show' to ensure we only run this ONCE when opening
   let wasShown = false;
   
   $: if (show && !wasShown) {
-      wasShown = true; // Mark as opened so typing doesn't re-trigger this
+      wasShown = true;
       
       if (character) {
           form = { ...character };
-          // Ensure legacy characters have a style
           if (!form.art_style) form.art_style = "Realistic";
       } else {
           form = getEmptyForm();
           generateSdPrompt(); 
       }
   } else if (!show && wasShown) {
-      wasShown = false; // Reset when closed
+      wasShown = false;
   }
 
   function generateSdPrompt() {
-    const base = `(masterpiece, best quality), solo, ${form.gender}, ${form.age} years old`;
-    const features = `skin: ${form.skin_tone}, hair: ${form.hair_color} ${form.hair_style}, body: ${form.body_type}`;
-    const details = `${form.personality} expression, detailed face, looking at viewer, portrait`;
+    // Build prompt in SD-friendly format without colons
+    const parts: string[] = [];
     
-    let clothing = "casual clothing";
-    if (form.gender === 'Female') clothing = "detailed dress";
-    else if (form.gender === 'Male') clothing = "shirt and pants";
+    // Quality tags first (these get highest weight)
+    parts.push('(masterpiece, best quality, high resolution)');
+    
+    // Subject - use 1girl/1boy for better SD understanding
+    const genderTag = form.gender === 'Female' ? '1girl' : 
+                      form.gender === 'Male' ? '1boy' : 
+                      '1person';
+    parts.push(`solo, ${genderTag}`);
+    
+    // Age
+    if (form.age) {
+      parts.push(`${form.age} years old`);
+    }
+    
+    // Hair - put color BEFORE style for emphasis
+    if (form.hair_color && form.hair_style) {
+      // Clean up the hair style to be SD-friendly
+      const hairStyle = form.hair_style.toLowerCase().replace(',', '');
+      parts.push(`${form.hair_color.toLowerCase()} hair`);
+      parts.push(`${hairStyle} hair`);
+    } else if (form.hair_color) {
+      parts.push(`${form.hair_color.toLowerCase()} hair`);
+    }
+    
+    // Skin tone
+    if (form.skin_tone) {
+      parts.push(`${form.skin_tone.toLowerCase()} skin`);
+    }
+    
+    // Body type
+    if (form.body_type) {
+      const bodyMap: Record<string, string> = {
+        'Slim': 'slim body',
+        'Athletic': 'athletic body, fit',
+        'Average': 'normal body',
+        'Curvy': 'curvy body',
+        'Muscular': 'muscular body',
+        'Heavyset': 'large body'
+      };
+      parts.push(bodyMap[form.body_type] || `${form.body_type.toLowerCase()} body`);
+    }
+    
+    // Clothing based on gender
+    if (form.gender === 'Female') {
+      parts.push('wearing elegant dress');
+    } else if (form.gender === 'Male') {
+      parts.push('wearing casual shirt');
+    } else {
+      parts.push('wearing casual clothing');
+    }
+    
+    // Expression/personality
+    if (form.personality) {
+      parts.push(`${form.personality.toLowerCase()} expression`);
+    }
+    
+    // Portrait framing tags
+    parts.push('detailed face, looking at viewer, portrait, upper body');
+    
+    // Lighting and quality
+    parts.push('soft lighting, studio lighting');
 
-    form.sd_prompt = `${base}, ${features}, ${clothing}, ${details}`;
+    form.sd_prompt = parts.join(', ');
   }
 
   async function generatePortrait() {
@@ -76,7 +132,7 @@
           form.seed = parseInt(seedStr); 
       } catch (e) {
           console.error(e);
-          alert("Failed to generate portrait.");
+          alert("Failed to generate portrait: " + e);
       } finally {
           isGenerating = false;
       }
@@ -94,12 +150,18 @@
   function handleKeydown(e: KeyboardEvent) {
       if (e.key === 'Escape') close();
   }
+
+  function handleBackdropClick(e: MouseEvent) {
+      if (e.target === e.currentTarget) {
+          close();
+      }
+  }
 </script>
 
 {#if show}
 <div 
   class="modal-backdrop" 
-  on:click={close}
+  on:click={handleBackdropClick}
   on:keydown={handleKeydown}
   role="button"
   tabindex="0"
@@ -152,11 +214,11 @@
                     <input id="char-personality" type="text" bind:value={form.personality} on:input={generateSdPrompt} />
                 </div>
             </div>
-            
+          
             <div class="group full">
                 <label for="char-prompt">Prompt Preview</label>
-                <textarea id="char-prompt" bind:value={form.sd_prompt} rows="3"></textarea>
-                <small>Editing this changes the image generator instructions directly.</small>
+                <textarea id="char-prompt" bind:value={form.sd_prompt} rows="4"></textarea>
+                <small>Editing this changes the image generator instructions directly. The prompt is auto-generated from the fields above.</small>
             </div>
         </div>
 
@@ -204,16 +266,22 @@
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(0,0,0,0.6); z-index: 2000;
     display: flex; justify-content: center; align-items: center;
-    cursor: pointer;
   }
   .modal {
-    background: white; padding: 25px; border-radius: 8px;
+    background: var(--bg-primary, white); 
+    color: var(--text-primary, #333);
+    padding: 25px; 
+    border-radius: 8px;
     width: 900px;
-    max-height: 90vh; overflow-y: auto;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-    cursor: default; outline: none;
+    max-height: 90vh; 
+    overflow-y: auto;
+    box-shadow: 0 10px 25px var(--shadow, rgba(0,0,0,0.5));
   }
-  h2 { margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+  h2 { 
+    margin-top: 0; 
+    border-bottom: 1px solid var(--border-secondary, #eee); 
+    padding-bottom: 10px; 
+  }
 
   .split-layout { display: flex; gap: 20px; }
 
@@ -221,36 +289,62 @@
   
   .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .group { display: flex; flex-direction: column; gap: 4px; }
-  .full { width: 100%; margin-top: 10px; }
+  .full { width: 100%; margin-top: 10px; grid-column: 1 / -1; }
   
-  label { font-size: 0.85em; font-weight: bold; color: #555; }
-  input, select, textarea { padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
-  small { font-size: 0.75em; color: #888; }
+  label { 
+    font-size: 0.85em; 
+    font-weight: bold; 
+    color: var(--text-secondary, #555); 
+  }
+  
+  input, select, textarea { 
+    padding: 8px; 
+    border: 1px solid var(--border-primary, #ccc); 
+    border-radius: 4px; 
+    font-size: 14px; 
+    background: var(--bg-secondary, #fff);
+    color: var(--text-primary, #333);
+  }
+  
+  input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary, #007bff);
+  }
+  
+  small { 
+    font-size: 0.75em; 
+    color: var(--text-muted, #888); 
+  }
 
   .portrait-column {
       width: 300px;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      background: #f8f9fa;
+      background: var(--bg-tertiary, #f8f9fa);
       padding: 15px;
       border-radius: 8px;
-      border: 1px solid #eee;
+      border: 1px solid var(--border-secondary, #eee);
   }
 
   .image-preview {
       width: 100%;
       aspect-ratio: 2/3;
-      background: #e9ecef;
+      background: var(--bg-secondary, #e9ecef);
       border-radius: 4px;
       overflow: hidden;
       display: flex;
       align-items: center;
       justify-content: center;
-      border: 1px solid #dee2e6;
+      border: 1px solid var(--border-primary, #dee2e6);
   }
   .image-preview img { width: 100%; height: 100%; object-fit: cover; }
-  .placeholder { text-align: center; color: #adb5bd; display: flex; flex-direction: column; }
+  .placeholder { 
+    text-align: center; 
+    color: var(--text-muted, #adb5bd); 
+    display: flex; 
+    flex-direction: column; 
+  }
 
   .style-label { margin-bottom: -5px; margin-top: 5px; }
 
@@ -258,23 +352,64 @@
       width: 100%;
       padding: 8px;
       margin-bottom: 5px;
-      border: 1px solid #ccc;
+      border: 1px solid var(--border-primary, #ccc);
       border-radius: 4px;
+      background: var(--bg-secondary, #fff);
+      color: var(--text-primary, #333);
   }
 
   .gen-btn {
-      background: #6f42c1; color: white; border: none; padding: 10px;
-      border-radius: 4px; cursor: pointer; font-weight: bold;
-      transition: background 0.2s;
+      background: var(--accent-primary, #6f42c1); 
+      color: var(--text-inverse, white); 
+      border: none; 
+      padding: 10px;
+      border-radius: 4px; 
+      cursor: pointer; 
+      font-weight: bold;
+      transition: opacity 0.2s;
   }
-  .gen-btn:hover { background: #59359a; }
+  .gen-btn:hover:not(:disabled) { opacity: 0.9; }
   .gen-btn:disabled { opacity: 0.7; cursor: wait; }
 
-  .seed-info { font-size: 0.75em; color: #666; text-align: center; }
-  code { background: #eee; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+  .seed-info { 
+    font-size: 0.75em; 
+    color: var(--text-muted, #666); 
+    text-align: center; 
+  }
+  code { 
+    background: var(--bg-secondary, #eee); 
+    padding: 2px 4px; 
+    border-radius: 3px; 
+    font-family: monospace; 
+  }
 
-  .actions { margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px; pt: 10px; border-top: 1px solid #eee; }
-  .cancel { background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-  .save { background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;}
-  .save:hover { background: #218838; }
+  .actions { 
+    margin-top: 20px; 
+    display: flex; 
+    justify-content: flex-end; 
+    gap: 10px; 
+    padding-top: 15px; 
+    border-top: 1px solid var(--border-secondary, #eee); 
+  }
+  
+  .cancel { 
+    background: var(--accent-secondary, #6c757d); 
+    color: white; 
+    padding: 10px 20px; 
+    border: none; 
+    border-radius: 4px; 
+    cursor: pointer; 
+  }
+  .cancel:hover { opacity: 0.9; }
+  
+  .save { 
+    background: var(--accent-success, #28a745); 
+    color: white; 
+    padding: 10px 20px; 
+    border: none; 
+    border-radius: 4px; 
+    cursor: pointer; 
+    font-weight: bold;
+  }
+  .save:hover { opacity: 0.9; }
 </style>

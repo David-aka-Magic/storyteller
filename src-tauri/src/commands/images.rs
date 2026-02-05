@@ -1,9 +1,12 @@
-use tauri::{AppHandle, State};
-use serde_json::json;
+use tauri::State;
 use crate::state::OllamaState;
-use crate::models::{SDRequest, SDResponse, Img2ImgRequest};
+use crate::models::{CharacterProfile, SDRequest, SDResponse, Img2ImgRequest};
+use sqlx::Row;
+use serde_json::json;
 
-// --- Helpers ---
+const SD_URL: &str = "http://127.0.0.1:7860";
+
+// --- Helper Functions ---
 
 async fn switch_model_if_needed(client: &reqwest::Client, style: &str) -> Result<(), String> {
     let model_filename = match style {
@@ -12,20 +15,22 @@ async fn switch_model_if_needed(client: &reqwest::Client, style: &str) -> Result
         "3D" => "juggernautXL_ragnarokBy.safetensors",
         "Painting" => "juggernautXL_ragnarokBy.safetensors",
         "Sketch" => "juggernautXL_ragnarokBy.safetensors",
-        _ => return Ok(()),
+        _ => return Ok(()), // Don't switch for unknown styles
     };
 
-    let url = "http://127.0.0.1:7860/sdapi/v1/options";
+    let url = format!("{}/sdapi/v1/options", SD_URL);
     let payload = json!({ "sd_model_checkpoint": model_filename });
 
-    let res = client.post(url)
+    let res = client
+        .post(&url)
         .json(&payload)
         .send()
         .await
         .map_err(|e| format!("Failed to connect to SD Options: {}", e))?;
 
     if !res.status().is_success() {
-        return Err(format!("Failed to switch model: {}", res.status()));
+        // Don't fail if model switch fails - just log and continue with current model
+        println!("[SD] Warning: Failed to switch model to {}: {}", model_filename, res.status());
     }
 
     Ok(())
@@ -33,131 +38,235 @@ async fn switch_model_if_needed(client: &reqwest::Client, style: &str) -> Result
 
 fn get_style_prompts(style: &str) -> (String, String) {
     match style {
-        "Anime" => (", anime style, key visual, vibrant, cel shaded, studio ghibli".to_string(), "photorealistic, 3d, realistic".to_string()),
-        "Realistic" => (", photorealistic, raw photo, 8k uhd, dslr, soft lighting, high fidelity".to_string(), "drawing, anime, sketch, cartoon, graphic, text, painting".to_string()),
-        "3D" => (", 3d render, unreal engine 5, octane render, ray tracing".to_string(), "sketch, 2d, flat, drawing, anime".to_string()),
-        "Painting" => (", digital painting, oil painting, heavy strokes, concept art".to_string(), "photorealistic, 3d, camera, photo".to_string()),
-        "Sketch" => (", pencil sketch, graphite, monochrome, rough lines".to_string(), "color, 3d, photo, bright".to_string()),
+        "Anime" => (
+            ", anime style, key visual, vibrant, cel shaded, studio ghibli".to_string(),
+            "photorealistic, 3d, realistic".to_string()
+        ),
+        "Realistic" => (
+            ", photorealistic, raw photo, 8k uhd, dslr, soft lighting, high fidelity".to_string(),
+            "drawing, anime, sketch, cartoon, graphic, text, painting".to_string()
+        ),
+        "3D" => (
+            ", 3d render, unreal engine 5, octane render, ray tracing".to_string(),
+            "sketch, 2d, flat, drawing, anime".to_string()
+        ),
+        "Painting" => (
+            ", digital painting, oil painting, heavy strokes, concept art".to_string(),
+            "photorealistic, 3d, camera, photo".to_string()
+        ),
+        "Sketch" => (
+            ", pencil sketch, graphite, monochrome, rough lines".to_string(),
+            "color, 3d, photo, bright".to_string()
+        ),
         _ => ("".to_string(), "".to_string())
     }
 }
 
-// --- Commands ---
+// --- Character Commands ---
 
 #[tauri::command]
-pub async fn generate_image(
-    prompt: String,
-    chat_id: u64,
-    msg_index: usize,
-    character_id: Option<String>,
+pub async fn save_character(
+    character: CharacterProfile,
     state: State<'_, OllamaState>,
-    app: AppHandle,
-) -> Result<String, String> {
-    
-    let (seed, art_style) = {
-        let chars = state.characters.lock().map_err(|e| e.to_string())?;
-        let target_char = if let Some(id) = character_id {
-            chars.iter().find(|c| c.id == id).or(chars.first())
-        } else {
-            chars.first()
-        };
+) -> Result<i64, String> {
+    if character.id > 0 {
+        // Update existing
+        sqlx::query(
+            "UPDATE characters SET name = ?, age = ?, gender = ?, skin_tone = ?, hair_style = ?, 
+             hair_color = ?, body_type = ?, personality = ?, additional_notes = ?, sd_prompt = ?,
+             image = ?, seed = ?, art_style = ? WHERE id = ?"
+        )
+        .bind(&character.name)
+        .bind(character.age)
+        .bind(&character.gender)
+        .bind(&character.skin_tone)
+        .bind(&character.hair_style)
+        .bind(&character.hair_color)
+        .bind(&character.body_type)
+        .bind(&character.personality)
+        .bind(&character.additional_notes)
+        .bind(&character.sd_prompt)
+        .bind(&character.image)
+        .bind(character.seed)
+        .bind(&character.art_style)
+        .bind(character.id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(character.id)
+    } else {
+        // Insert new
+        let result = sqlx::query(
+            "INSERT INTO characters (name, age, gender, skin_tone, hair_style, hair_color, 
+             body_type, personality, additional_notes, sd_prompt, image, seed, art_style) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&character.name)
+        .bind(character.age)
+        .bind(&character.gender)
+        .bind(&character.skin_tone)
+        .bind(&character.hair_style)
+        .bind(&character.hair_color)
+        .bind(&character.body_type)
+        .bind(&character.personality)
+        .bind(&character.additional_notes)
+        .bind(&character.sd_prompt)
+        .bind(&character.image)
+        .bind(character.seed)
+        .bind(&character.art_style)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(result.last_insert_rowid())
+    }
+}
 
-        if let Some(c) = target_char {
-            let style = if c.art_style.is_empty() { "Realistic".to_string() } else { c.art_style.clone() };
-            (c.seed.unwrap_or(-1), style)
-        } else {
-            (-1, "Realistic".to_string())
-        }
-    };
+#[tauri::command]
+pub async fn delete_character(id: i64, state: State<'_, OllamaState>) -> Result<(), String> {
+    sqlx::query("DELETE FROM characters WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
-    let client = reqwest::Client::new();
-    switch_model_if_needed(&client, &art_style).await?;
+#[tauri::command]
+pub async fn get_character_list(state: State<'_, OllamaState>) -> Result<Vec<CharacterProfile>, String> {
+    let rows = sqlx::query(
+        "SELECT id, name, age, gender, skin_tone, hair_style, hair_color, body_type, 
+         personality, additional_notes, sd_prompt, image, seed, art_style FROM characters ORDER BY name ASC"
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    let url = "http://127.0.0.1:7860/sdapi/v1/txt2img";
-    let (style_suffix, style_negative) = get_style_prompts(&art_style);
-    let default_neg = "low quality, bad anatomy, worst quality, text, watermark, signature, ugly, deformed";
-    let combined_negative = format!("{}, {}", default_neg, style_negative);
+    let characters: Vec<CharacterProfile> = rows
+        .iter()
+        .map(|row| CharacterProfile {
+            id: row.get("id"),
+            name: row.get("name"),
+            age: row.get("age"),
+            gender: row.get("gender"),
+            skin_tone: row.get("skin_tone"),
+            hair_style: row.get("hair_style"),
+            hair_color: row.get("hair_color"),
+            body_type: row.get("body_type"),
+            personality: row.get("personality"),
+            additional_notes: row.get("additional_notes"),
+            sd_prompt: row.get("sd_prompt"),
+            image: row.get("image"),
+            seed: row.get("seed"),
+            art_style: row.get("art_style"),
+        })
+        .collect();
+
+    Ok(characters)
+}
+
+// --- Image Generation Commands ---
+
+#[tauri::command]
+pub async fn generate_image(prompt: String, state: State<'_, OllamaState>) -> Result<(String, String), String> {
+    let client = &state.client;
+    let url = format!("{}/sdapi/v1/txt2img", SD_URL);
+
+    let default_neg = "bad anatomy, bad hands, missing fingers, extra fingers, blurry, low quality";
 
     let payload = SDRequest {
-        prompt: format!("{}{}", prompt, style_suffix),
-        negative_prompt: combined_negative,
-        steps: 25,
-        width: 1024,
-        height: 1024,
+        prompt,
+        negative_prompt: default_neg.to_string(),
+        steps: 28,
+        width: 832,
+        height: 1216,
         cfg_scale: 7.0,
         sampler_name: "Euler a".to_string(),
         batch_size: 1,
-        seed: seed,
+        seed: -1,
     };
 
-    let res = client.post(url).json(&payload).send().await.map_err(|e| format!("SD API Error: {}", e))?;
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("SD Error: {}", e))?;
 
     if !res.status().is_success() {
-        return Err(format!("SD Generation Failed: {}", res.status()));
+        return Err(format!("SD Error: {}", res.status()));
     }
 
-    let sd_res: SDResponse = res.json().await.map_err(|e| format!("Failed to parse response: {}", e))?;
-    let base64_image = sd_res.images.first().ok_or("No image returned")?.clone();
+    let sd_res: SDResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    {
-        let mut chats = state.chats.lock().map_err(|e| e.to_string())?;
-        if let Some(chat) = chats.iter_mut().find(|c| c.id == chat_id) {
-            if let Some(msg) = chat.messages.get_mut(msg_index) {
-                msg.images = Some(vec![base64_image.clone()]);
-            } else {
-                return Err(format!("Save failed: Message index {} out of bounds", msg_index));
-            }
-        } else {
-            return Err(format!("Save failed: Chat ID {} not found", chat_id));
-        }
-    } 
+    let base64 = sd_res
+        .images
+        .first()
+        .ok_or("No image returned")?
+        .clone();
 
-    state.save(&app)?;
-    Ok(base64_image)
+    let info_json: serde_json::Value = serde_json::from_str(&sd_res.info)
+        .map_err(|_| "Failed to parse info JSON")?;
+
+    let seed = info_json["seed"].as_i64().unwrap_or(-1);
+
+    Ok((base64, seed.to_string()))
 }
 
 #[tauri::command]
 pub async fn generate_image_variation(
+    image_base64: String,
     prompt: String,
-    source_image: String,
-    chat_id: u64,
-    msg_index: usize,
     state: State<'_, OllamaState>,
-    app: AppHandle,
-) -> Result<String, String> {
-    let url = "http://127.0.0.1:7860/sdapi/v1/img2img";
+) -> Result<(String, String), String> {
+    let client = &state.client;
+    let url = format!("{}/sdapi/v1/img2img", SD_URL);
+
+    let default_neg = "bad anatomy, bad hands, missing fingers, extra fingers, blurry, low quality";
 
     let payload = Img2ImgRequest {
-        prompt: prompt.clone(),
-        negative_prompt: "low quality, bad anatomy, worst quality, text, watermark, signature, ugly, deformed".to_string(),
-        init_images: vec![source_image],
-        denoising_strength: 0.75,
-        steps: 25,
-        width: 1024,
-        height: 1024,
+        prompt,
+        negative_prompt: default_neg.to_string(),
+        init_images: vec![image_base64],
+        denoising_strength: 0.5,
+        steps: 28,
+        width: 832,
+        height: 1216,
         cfg_scale: 7.0,
         sampler_name: "Euler a".to_string(),
         batch_size: 1,
     };
 
-    let client = reqwest::Client::new();
-    let res = client.post(url).json(&payload).send().await.map_err(|e| format!("Failed to connect: {}", e))?;
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("SD Error: {}", e))?;
 
-    if !res.status().is_success() { return Err(format!("SD Error: {}", res.status())); }
-    let sd_res: SDResponse = res.json().await.map_err(|e| format!("Failed to parse: {}", e))?;
-    let base64_image = sd_res.images.first().ok_or("No image")?.clone();
-
-    {
-        let mut chats = state.chats.lock().map_err(|e| e.to_string())?;
-        if let Some(chat) = chats.iter_mut().find(|c| c.id == chat_id) {
-            if let Some(msg) = chat.messages.get_mut(msg_index) {
-                if let Some(imgs) = &mut msg.images { imgs[0] = base64_image.clone(); } 
-                else { msg.images = Some(vec![base64_image.clone()]); }
-            }
-        }
+    if !res.status().is_success() {
+        return Err(format!("SD Error: {}", res.status()));
     }
-    state.save(&app)?;
-    Ok(base64_image)
+
+    let sd_res: SDResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    let base64 = sd_res
+        .images
+        .first()
+        .ok_or("No image returned")?
+        .clone();
+
+    let info_json: serde_json::Value = serde_json::from_str(&sd_res.info)
+        .map_err(|_| "Failed to parse info JSON")?;
+
+    let seed = info_json["seed"].as_i64().unwrap_or(-1);
+
+    Ok((base64, seed.to_string()))
 }
 
 #[tauri::command]
@@ -166,12 +275,15 @@ pub async fn generate_character_portrait(
     style: String,
     state: State<'_, OllamaState>,
 ) -> Result<(String, String), String> {
-    let client = reqwest::Client::new();
-    switch_model_if_needed(&client, &style).await?;
+    let client = &state.client;
+    
+    // Switch model based on style
+    switch_model_if_needed(client, &style).await?;
+    
+    let url = format!("{}/sdapi/v1/txt2img", SD_URL);
 
-    let url = "http://127.0.0.1:7860/sdapi/v1/txt2img";
     let (style_suffix, style_negative) = get_style_prompts(&style);
-    let default_neg = "low quality, bad anatomy, text, watermark, signature, ugly, deformed, blurry";
+    let default_neg = "bad anatomy, bad hands, missing fingers, extra fingers, blurry, low quality";
     let combined_negative = format!("{}, {}", default_neg, style_negative);
 
     let payload = SDRequest {
@@ -183,15 +295,34 @@ pub async fn generate_character_portrait(
         cfg_scale: 7.0,
         sampler_name: "Euler a".to_string(),
         batch_size: 1,
-        seed: -1, 
+        seed: -1,
     };
 
-    let res = client.post(url).json(&payload).send().await.map_err(|e| e.to_string())?;
-    if !res.status().is_success() { return Err(format!("SD Error: {}", res.status())); }
-    
-    let sd_res: SDResponse = res.json().await.map_err(|e| e.to_string())?;
-    let base64 = sd_res.images.first().ok_or("No image")?.clone();
-    let info_json: serde_json::Value = serde_json::from_str(&sd_res.info).map_err(|_| "Failed to parse info")?;
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("SD Error: {}", e))?;
+
+    if !res.status().is_success() {
+        return Err(format!("SD Error: {}", res.status()));
+    }
+
+    let sd_res: SDResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    let base64 = sd_res
+        .images
+        .first()
+        .ok_or("No image returned")?
+        .clone();
+
+    let info_json: serde_json::Value = serde_json::from_str(&sd_res.info)
+        .map_err(|_| "Failed to parse info JSON")?;
+
     let seed = info_json["seed"].as_i64().unwrap_or(-1);
 
     Ok((base64, seed.to_string()))

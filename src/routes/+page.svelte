@@ -4,10 +4,13 @@
   
   import Sidebar from '../components/Sidebar.svelte';
   import ChatArea from '../components/ChatArea.svelte';
-  import ConfigPanel from '../components/ConfigPanel.svelte'; // <--- NEW
+  import ConfigPanel from '../components/ConfigPanel.svelte';
   import ContextMenu from '../components/ContextMenu.svelte';
   import CharacterModal from '../components/CharacterModal.svelte';
-  import StoryModal from '../components/StoryModal.svelte'; 
+  import StoryModal from '../components/StoryModal.svelte';
+  import SettingsModal from '../components/SettingsModal.svelte';
+
+  import { currentTheme, applyTheme } from '$lib/stores/theme';
 
   import type { 
     ChatSummary, ChatMessage, StoryResponse, SdDetails, 
@@ -32,6 +35,9 @@
   let storyToEdit: StoryPremise | null = null;
   let stories: StoryPremise[] = [];
   let selectedStoryId: string = '';
+
+  let showSettingsModal = false;
+  let configPanelCollapsed = false;
 
   function mapMessagesToFrontend(backendMessages: any[]): ChatMessage[] {
     let idCounter = Date.now();
@@ -90,7 +96,7 @@
       if (chat && chat.character_id) {
           selectedCharacterIds.add(chat.character_id);
       }
-      selectedCharacterIds = selectedCharacterIds; // Trigger reactivity
+      selectedCharacterIds = selectedCharacterIds;
     } catch (e) {
       messages = [{ id: Date.now(), text: `Error: ${e}`, sender: 'ai' }];
     } finally {
@@ -112,9 +118,23 @@
   async function clearChat() {
     if (isLoading) return;
     try {
-        await invoke('clear_history');
+        await invoke('clear_history', { id: currentChatId });
         messages = [];
         await fetchChatList();
+    } catch (e) { console.error(e); }
+  }
+
+  async function deleteSelectedChats() {
+    if (selectionState.selectedIds.size === 0) return;
+    const ids = Array.from(selectionState.selectedIds);
+    try {
+        await invoke('delete_chats', { ids });
+        selectionState = { isSelecting: false, selectedIds: new Set() };
+        await fetchChatList();
+        if (ids.includes(currentChatId) && chatList.length > 0) {
+            currentChatId = chatList[0].id;
+            await loadSelectedChat(currentChatId);
+        }
     } catch (e) { console.error(e); }
   }
 
@@ -125,7 +145,7 @@
     messages = [...messages, { id: Date.now(), text, sender: 'user' }];
 
     try {
-      const res: any = await invoke('generate_story', { prompt: text });
+      const res: any = await invoke('generate_story', { prompt: text, chatId: currentChatId });
       let newMsg: ChatMessage = { id: Date.now() + 1, text: '', sender: 'ai' };
 
       if (res && typeof res === 'object' && 'story' in res) {
@@ -201,7 +221,6 @@
 
     try {
         await invoke('set_chat_character', { chatId: currentChatId, characterId: newId });
-        // Update local list so UI stays consistent without refetch
         const c = chatList.find(x => x.id === currentChatId);
         if (c) c.character_id = newId || undefined;
     } catch (e) { console.error(e); }
@@ -213,36 +232,17 @@
       selectionState.selectedIds.clear();
       selectionState.isSelecting = true;
     }
-    if (selectionState.selectedIds.has(chatId)) {
-        selectionState.selectedIds.delete(chatId);
-        if (selectionState.selectedIds.size === 0) selectionState.isSelecting = false;
-    } else {
-        selectionState.selectedIds.add(chatId);
-    }
+    selectionState.selectedIds.add(chatId);
     selectionState = selectionState;
     contextMenu = { show: true, x: event.clientX, y: event.clientY, chatId };
   }
 
-  async function deleteSelectedChats() {
-    if (isLoading || selectionState.selectedIds.size === 0) return;
-    isLoading = true;
-    try {
-      const ok = await invoke('delete_chats', {ids: Array.from(selectionState.selectedIds)});
-      if (ok) {
-        await fetchChatList();
-        if (selectionState.selectedIds.has(currentChatId)) {
-           if (chatList.length > 0) await loadSelectedChat(chatList[0].id);
-           else await startNewChat();
-        }
-        selectionState = { selectedIds: new Set(), isSelecting: false };
-      }
-    } catch (e) { console.error(e); } finally { isLoading = false; }
-    contextMenu.show = false;
-  }
-
   onMount(() => {
+    // Apply theme on mount
+    applyTheme($currentTheme);
+    
     document.addEventListener('click', (e) => {
-        if (!(e.target as HTMLElement).closest('.context-menu')) contextMenu.show = false;
+        if (contextMenu.show && !(e.target as HTMLElement).closest('.context-menu')) contextMenu.show = false;
     });
     fetchChatList();
     fetchStoryList();
@@ -256,6 +256,7 @@
       {chatList} {currentChatId} {isLoading} {selectionState}
       on:newChat={startNewChat}
       on:deleteSelected={deleteSelectedChats}
+      on:openSettings={() => showSettingsModal = true}
       on:selectChat={(e) => {
           if (selectionState.isSelecting) {
               const id = e.detail;
@@ -290,6 +291,8 @@
         {characters} 
         {selectedStoryId} 
         {selectedCharacterIds}
+        collapsed={configPanelCollapsed}
+        on:toggleCollapse={(e) => configPanelCollapsed = e.detail}
         on:selectStory={(e) => selectedStoryId = e.detail}
         on:toggleCharacter={(e) => toggleCharacterSelection(e.detail)}
         on:createStory={() => { storyToEdit = null; showStoryModal = true; }}
@@ -325,10 +328,62 @@
         on:close={() => showStoryModal = false}
         on:save={handleSaveStory}
     />
+
+    <SettingsModal
+        show={showSettingsModal}
+        on:close={() => showSettingsModal = false}
+    />
   </div>
 </main>
 
 <style>
-  main { margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; font-family: Arial, sans-serif; }
-  .app-layout { flex: 1; display: flex; overflow: hidden; }
+  :global(:root) {
+    /* Default light theme - will be overridden by JS */
+    --bg-primary: #ffffff;
+    --bg-secondary: #f4f4f9;
+    --bg-tertiary: #f9f9fc;
+    --bg-chat: #fafafa;
+    --bg-message: #ffffff;
+    --bg-message-user: #e3f2fd;
+    --bg-message-ai: #ffffff;
+    --bg-hover: #e0e0e5;
+    --bg-active: #4a9eff;
+    --text-primary: #333333;
+    --text-secondary: #666666;
+    --text-muted: #999999;
+    --text-inverse: #ffffff;
+    --border-primary: #dddddd;
+    --border-secondary: #eeeeee;
+    --border-active: #2196f3;
+    --accent-primary: #007bff;
+    --accent-secondary: #6c757d;
+    --accent-success: #28a745;
+    --accent-danger: #dc3545;
+    --accent-warning: #ffc107;
+    --shadow: rgba(0, 0, 0, 0.1);
+  }
+
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    transition: background 0.3s, color 0.3s;
+  }
+
+  main { 
+    margin: 0; 
+    padding: 0; 
+    height: 100vh; 
+    display: flex; 
+    flex-direction: column; 
+    font-family: 'Segoe UI', Arial, sans-serif; 
+    background: var(--bg-primary);
+  }
+
+  .app-layout { 
+    flex: 1; 
+    display: flex; 
+    overflow: hidden; 
+  }
 </style>
