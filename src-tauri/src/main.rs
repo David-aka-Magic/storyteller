@@ -5,6 +5,7 @@
 
 mod commands;
 mod config;
+mod llm_parser;
 mod models;
 mod services;
 mod state;
@@ -152,6 +153,14 @@ fn main() {
             config::get_config,
             config::update_config,
             config::set_sd_path,
+            
+            // LLM Parser commands
+            llm_parser::parse_story_turn,
+            llm_parser::get_story_text,
+            llm_parser::get_character_names,
+            llm_parser::check_generation_flags,
+            
+            
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
