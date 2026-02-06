@@ -4,6 +4,7 @@
 )]
 
 mod commands;
+mod context_compression;
 mod config;
 mod llm_parser;
 mod models;
@@ -153,7 +154,6 @@ fn main() {
             config::get_config,
             config::update_config,
             config::set_sd_path,
-            
             // LLM Parser commands
             llm_parser::parse_story_turn,
             llm_parser::get_story_text,
