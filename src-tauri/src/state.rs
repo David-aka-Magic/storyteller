@@ -1,3 +1,8 @@
+// src-tauri/src/state.rs
+//
+// Application state with SQLite database connection
+// Extended to support multi-story characters and master reference images
+
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::sync::Mutex;
 use std::fs;
@@ -45,6 +50,12 @@ impl OllamaState {
     }
 
     async fn setup_database(pool: &SqlitePool) {
+        // Enable foreign keys
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(pool)
+            .await
+            .ok();
+
         // Chats table
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS chats (
@@ -94,17 +105,22 @@ impl OllamaState {
             "CREATE TABLE IF NOT EXISTS story_premises (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
-                description TEXT NOT NULL
+                description TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )"
         )
         .execute(pool)
         .await
         .expect("Failed to create story_premises table");
 
-        // Characters table
+        // =====================================================================
+        // CHARACTERS TABLE - Extended for multi-story support
+        // =====================================================================
+        // Note: We add new columns if they don't exist (migration-safe)
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS characters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                story_id INTEGER,
                 name TEXT NOT NULL,
                 age INTEGER,
                 gender TEXT,
@@ -114,14 +130,56 @@ impl OllamaState {
                 body_type TEXT,
                 personality TEXT,
                 additional_notes TEXT,
+                default_clothing TEXT,
                 sd_prompt TEXT,
                 image TEXT,
+                master_image_path TEXT,
                 seed INTEGER,
-                art_style TEXT
+                art_style TEXT DEFAULT 'Realistic',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(story_id) REFERENCES story_premises(id) ON DELETE CASCADE
             )"
         )
         .execute(pool)
         .await
         .expect("Failed to create characters table");
+
+        // Migration: Add new columns if they don't exist (for existing databases)
+        // These will silently fail if columns already exist
+        sqlx::query("ALTER TABLE characters ADD COLUMN story_id INTEGER REFERENCES story_premises(id) ON DELETE CASCADE")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN default_clothing TEXT")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN master_image_path TEXT")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+            .execute(pool).await.ok();
+
+        // =====================================================================
+        // INDEXES for fast lookups
+        // =====================================================================
+        
+        // Index for fast exact name lookups (critical for LLM integration)
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_characters_name ON characters(name)")
+            .execute(pool).await.ok();
+
+        // Index for story-based queries
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_characters_story ON characters(story_id)")
+            .execute(pool).await.ok();
+
+        // Composite index for name + story lookups
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_characters_story_name ON characters(story_id, name)")
+            .execute(pool).await.ok();
+
+        // Index for chat lookups
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)")
+            .execute(pool).await.ok();
+
+        // Index for image lookups
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_images_chat ON images(chat_id)")
+            .execute(pool).await.ok();
     }
 }

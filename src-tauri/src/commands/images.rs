@@ -1,3 +1,8 @@
+// src-tauri/src/commands/images.rs
+//
+// Image generation and character commands
+// Updated to include new CharacterProfile fields (story_id, default_clothing, master_image_path)
+
 use tauri::State;
 use crate::state::OllamaState;
 use crate::models::{CharacterProfile, SDRequest, SDResponse, Img2ImgRequest};
@@ -62,7 +67,9 @@ fn get_style_prompts(style: &str) -> (String, String) {
     }
 }
 
-// --- Character Commands ---
+// ============================================================================
+// CHARACTER COMMANDS - Updated with new fields
+// ============================================================================
 
 #[tauri::command]
 pub async fn save_character(
@@ -70,14 +77,31 @@ pub async fn save_character(
     state: State<'_, OllamaState>,
 ) -> Result<i64, String> {
     if character.id > 0 {
-        // Update existing
+        // Update existing - includes all new fields
         sqlx::query(
-            "UPDATE characters SET name = ?, age = ?, gender = ?, skin_tone = ?, hair_style = ?, 
-             hair_color = ?, body_type = ?, personality = ?, additional_notes = ?, sd_prompt = ?,
-             image = ?, seed = ?, art_style = ? WHERE id = ?"
+            "UPDATE characters SET 
+                story_id = ?,
+                name = ?, 
+                age = ?, 
+                gender = ?, 
+                skin_tone = ?, 
+                hair_style = ?, 
+                hair_color = ?, 
+                body_type = ?, 
+                personality = ?, 
+                additional_notes = ?, 
+                default_clothing = ?,
+                sd_prompt = ?,
+                image = ?, 
+                master_image_path = ?,
+                seed = ?, 
+                art_style = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?"
         )
+        .bind(&character.story_id)
         .bind(&character.name)
-        .bind(character.age)
+        .bind(&character.age)
         .bind(&character.gender)
         .bind(&character.skin_tone)
         .bind(&character.hair_style)
@@ -85,24 +109,29 @@ pub async fn save_character(
         .bind(&character.body_type)
         .bind(&character.personality)
         .bind(&character.additional_notes)
+        .bind(&character.default_clothing)
         .bind(&character.sd_prompt)
         .bind(&character.image)
-        .bind(character.seed)
+        .bind(&character.master_image_path)
+        .bind(&character.seed)
         .bind(&character.art_style)
-        .bind(character.id)
+        .bind(&character.id)
         .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
         Ok(character.id)
     } else {
-        // Insert new
+        // Insert new - includes all new fields
         let result = sqlx::query(
-            "INSERT INTO characters (name, age, gender, skin_tone, hair_style, hair_color, 
-             body_type, personality, additional_notes, sd_prompt, image, seed, art_style) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO characters (
+                story_id, name, age, gender, skin_tone, hair_style, hair_color, 
+                body_type, personality, additional_notes, default_clothing,
+                sd_prompt, image, master_image_path, seed, art_style
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
+        .bind(&character.story_id)
         .bind(&character.name)
-        .bind(character.age)
+        .bind(&character.age)
         .bind(&character.gender)
         .bind(&character.skin_tone)
         .bind(&character.hair_style)
@@ -110,9 +139,11 @@ pub async fn save_character(
         .bind(&character.body_type)
         .bind(&character.personality)
         .bind(&character.additional_notes)
+        .bind(&character.default_clothing)
         .bind(&character.sd_prompt)
         .bind(&character.image)
-        .bind(character.seed)
+        .bind(&character.master_image_path)
+        .bind(&character.seed)
         .bind(&character.art_style)
         .execute(&state.db)
         .await
@@ -133,9 +164,12 @@ pub async fn delete_character(id: i64, state: State<'_, OllamaState>) -> Result<
 
 #[tauri::command]
 pub async fn get_character_list(state: State<'_, OllamaState>) -> Result<Vec<CharacterProfile>, String> {
+    // Updated to include all new fields
     let rows = sqlx::query(
-        "SELECT id, name, age, gender, skin_tone, hair_style, hair_color, body_type, 
-         personality, additional_notes, sd_prompt, image, seed, art_style FROM characters ORDER BY name ASC"
+        "SELECT id, story_id, name, age, gender, skin_tone, hair_style, hair_color, 
+                body_type, personality, additional_notes, default_clothing,
+                sd_prompt, image, master_image_path, seed, art_style 
+         FROM characters ORDER BY name ASC"
     )
     .fetch_all(&state.db)
     .await
@@ -145,6 +179,7 @@ pub async fn get_character_list(state: State<'_, OllamaState>) -> Result<Vec<Cha
         .iter()
         .map(|row| CharacterProfile {
             id: row.get("id"),
+            story_id: row.get("story_id"),
             name: row.get("name"),
             age: row.get("age"),
             gender: row.get("gender"),
@@ -154,8 +189,10 @@ pub async fn get_character_list(state: State<'_, OllamaState>) -> Result<Vec<Cha
             body_type: row.get("body_type"),
             personality: row.get("personality"),
             additional_notes: row.get("additional_notes"),
+            default_clothing: row.get("default_clothing"),
             sd_prompt: row.get("sd_prompt"),
             image: row.get("image"),
+            master_image_path: row.get("master_image_path"),
             seed: row.get("seed"),
             art_style: row.get("art_style"),
         })
@@ -164,7 +201,9 @@ pub async fn get_character_list(state: State<'_, OllamaState>) -> Result<Vec<Cha
     Ok(characters)
 }
 
-// --- Image Generation Commands ---
+// ============================================================================
+// IMAGE GENERATION COMMANDS
+// ============================================================================
 
 #[tauri::command]
 pub async fn generate_image(prompt: String, state: State<'_, OllamaState>) -> Result<(String, String), String> {
@@ -281,8 +320,8 @@ pub async fn generate_character_portrait(
     switch_model_if_needed(client, &style).await?;
     
     let url = format!("{}/sdapi/v1/txt2img", SD_URL);
-
     let (style_suffix, style_negative) = get_style_prompts(&style);
+
     let default_neg = "bad anatomy, bad hands, missing fingers, extra fingers, blurry, low quality";
     let combined_negative = format!("{}, {}", default_neg, style_negative);
 

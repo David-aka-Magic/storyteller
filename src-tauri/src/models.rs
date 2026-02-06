@@ -1,3 +1,8 @@
+// src-tauri/src/models.rs
+//
+// Data models for StoryEngine
+// Extended with multi-story character support
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,9 +29,12 @@ pub struct ChatResponse {
     pub title: String,
 }
 
+/// Extended CharacterProfile with multi-story support
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CharacterProfile {
     pub id: i64,
+    #[serde(default)]
+    pub story_id: Option<i64>,           // NEW: Links character to a story
     pub name: String,
     pub age: Option<i32>,
     pub gender: Option<String>,
@@ -36,13 +44,46 @@ pub struct CharacterProfile {
     pub body_type: Option<String>,
     pub personality: Option<String>,
     pub additional_notes: Option<String>,
+    #[serde(default)]
+    pub default_clothing: Option<String>, // NEW: Default clothing for scene generation
     pub sd_prompt: Option<String>,
     #[serde(default)]
-    pub image: Option<String>,
+    pub image: Option<String>,            // Base64 preview image
+    #[serde(default)]
+    pub master_image_path: Option<String>, // NEW: File path for IP-Adapter reference
     #[serde(default)]
     pub seed: Option<i64>,
     #[serde(default)]
     pub art_style: Option<String>,
+}
+
+/// Lightweight lookup result for LLM integration
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CharacterLookup {
+    pub id: i64,
+    pub name: String,
+    pub master_image_path: Option<String>,
+    pub sd_prompt: Option<String>,
+    pub default_clothing: Option<String>,
+    pub art_style: Option<String>,
+}
+
+/// Scene character from LLM output (matches your Ollama model's JSON)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SceneCharacter {
+    pub name: String,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub view: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub expression: Option<String>,
+    #[serde(default)]
+    pub clothing: Option<String>,
+    #[serde(default)]
+    pub facing: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
