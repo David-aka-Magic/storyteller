@@ -7,6 +7,7 @@ mod commands;
 mod context_compression;
 mod config;
 mod llm_parser;
+mod mask_generator;
 mod models;
 mod services;
 mod state;
@@ -72,7 +73,6 @@ fn main() {
                         if !ServiceManager::is_sd_running().await {
                             println!("[Startup] Starting Stable Diffusion...");
                             
-                            // Path to venv python
                             let venv_python = sd_path.join("venv").join("Scripts").join("python.exe");
                             let launch_py = sd_path.join("launch.py");
                             
@@ -96,14 +96,10 @@ fn main() {
                                     Err(e) => println!("[Startup] Failed to start SD: {}", e),
                                 }
                             } else {
-                                // Fallback: Run webui.bat directly (not webui-user.bat)
-                                // Or use cmd /c start to open in new window
                                 let webui_bat = sd_path.join("webui-user.bat");
                                 println!("[Startup] Venv not found, trying batch file at: {:?}", webui_bat);
                                 
                                 if webui_bat.exists() {
-                                    // Use 'start' command to launch in a new console window
-                                    // This keeps SD running independently
                                     match std::process::Command::new("cmd")
                                         .args(["/c", "start", "StableDiffusion", "cmd", "/k", "webui-user.bat"])
                                         .current_dir(&sd_path)
@@ -159,8 +155,9 @@ fn main() {
             llm_parser::get_story_text,
             llm_parser::get_character_names,
             llm_parser::check_generation_flags,
-            
-            
+            // Mask Generator commands
+            mask_generator::generate_color_mask,
+            mask_generator::save_mask_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
