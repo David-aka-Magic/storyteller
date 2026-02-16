@@ -1,0 +1,59 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "juggernautXL_ragnarokBy.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "portrait of a 28 year old man, short black hair, warm brown eyes, short beard, athletic build, wearing fitted black t-shirt, neutral background, looking at camera, detailed face, high quality, sharp focus, studio lighting, centered composition"
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "bad anatomy, bad hands, missing fingers, extra fingers, blurry, low quality, deformed, mutated, watermark, text, signature, cropped, out of frame, worst quality, low resolution, ugly, duplicate, extra limbs, gross proportions, malformed, poorly drawn face, poorly drawn hands, long neck, extra heads, bad proportions, cloned face"
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 832,
+      "height": 1216,
+      "batch_size": 4
+    }
+  },
+  "5": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["4", 0],
+      "seed": -1,
+      "steps": 30,
+      "cfg": 5.5,
+      "sampler_name": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "denoise": 1.0
+    }
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["5", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["6", 0],
+      "filename_prefix": "StoryEngine/master_portrait"
+    }
+  }
+}

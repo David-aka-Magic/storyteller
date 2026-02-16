@@ -168,6 +168,10 @@ fn main() {
             comfyui_api::generate_comfyui_scene,
             comfyui_api::read_file_bytes,
             comfyui_api::read_file_base64,
+            // Master Portrait commands
+             commands::master_portrait::generate_master_portrait,
+             commands::master_portrait::save_master_portrait,
+             commands::master_portrait::preview_portrait_prompt,
             
         ])
         .run(tauri::generate_context!())

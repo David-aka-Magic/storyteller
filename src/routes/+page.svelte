@@ -192,9 +192,9 @@ l<script lang="ts">
       try { characters = await invoke('get_character_list'); } catch (e) { console.error(e); }
   }
 
-  async function handleSaveCharacter(e: CustomEvent<CharacterProfile>) {
-    try {
-        await invoke('save_character', { character: e.detail });
+  async function handleSaveCharacter(character: CharacterProfile) {
+      try {
+        await invoke('save_character', { character });
         await fetchCharacterList();
         showCharModal = false;
     } catch (e) { console.error(e); }
@@ -321,10 +321,10 @@ l<script lang="ts">
 
     <CharacterModal 
         show={showCharModal} character={characterToEdit}
-        on:close={() => showCharModal = false}
-        on:save={handleSaveCharacter}
+        onclose={() => showCharModal = false}
+        onsave={(form) => handleSaveCharacter(form)}
     />
-
+    
     <StoryModal 
         show={showStoryModal} story={storyToEdit}
         on:close={() => showStoryModal = false}
