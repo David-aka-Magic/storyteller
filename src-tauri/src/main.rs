@@ -3,6 +3,7 @@
     windows_subsystem = "windows"
 )]
 
+mod comfyui_api;
 mod commands;
 mod context_compression;
 mod config;
@@ -158,6 +159,16 @@ fn main() {
             // Mask Generator commands
             mask_generator::generate_color_mask,
             mask_generator::save_mask_image,
+            // ComfyUI API commands
+            comfyui_api::check_comfyui_status,
+            comfyui_api::upload_to_comfyui,
+            comfyui_api::queue_comfyui_prompt,
+            comfyui_api::poll_comfyui_result,
+            comfyui_api::download_comfyui_image,
+            comfyui_api::generate_comfyui_scene,
+            comfyui_api::read_file_bytes,
+            comfyui_api::read_file_base64,
+            
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
