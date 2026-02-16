@@ -172,7 +172,8 @@ fn main() {
              commands::master_portrait::generate_master_portrait,
              commands::master_portrait::save_master_portrait,
              commands::master_portrait::preview_portrait_prompt,
-            
+            // Orchestrator (unified story turn pipeline)
+             commands::orchestrator::process_story_turn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

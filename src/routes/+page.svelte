@@ -1,6 +1,4 @@
-
-
-l<script lang="ts">
+<script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   
@@ -13,6 +11,10 @@ l<script lang="ts">
   import SettingsModal from '../components/SettingsModal.svelte';
 
   import { currentTheme, applyTheme } from '$lib/stores/theme';
+  import {
+    processStoryTurn,
+    type StoryTurnResult
+  } from '$lib/orchestrator-types';
 
   import type { 
     ChatSummary, ChatMessage, StoryResponse, SdDetails, 
@@ -40,6 +42,9 @@ l<script lang="ts">
 
   let showSettingsModal = false;
   let configPanelCollapsed = false;
+
+  // Orchestrator state
+  let lastTurnResult: StoryTurnResult | null = null;
 
   function mapMessagesToFrontend(backendMessages: any[]): ChatMessage[] {
     let idCounter = Date.now();
@@ -147,21 +152,70 @@ l<script lang="ts">
     messages = [...messages, { id: Date.now(), text, sender: 'user' }];
 
     try {
-      const res: any = await invoke('generate_story', { prompt: text, chatId: currentChatId });
-      let newMsg: ChatMessage = { id: Date.now() + 1, text: '', sender: 'ai' };
+      // Parse story_id from selectedStoryId (skip "1" which is "Free Write")
+      const storyId = selectedStoryId && selectedStoryId !== '1'
+        ? parseInt(selectedStoryId, 10)
+        : undefined;
 
-      if (res && typeof res === 'object' && 'story' in res) {
-          newMsg.data = res as StoryResponse;
-      } else if (res && typeof res === 'object' && res.type === 'phase1') {
-          newMsg.text = (res as Phase1Response).text;
-      } else {
-          newMsg.text = typeof res === 'string' ? res : JSON.stringify(res);
+      const result = await processStoryTurn(currentChatId, text, storyId);
+      lastTurnResult = result;
+
+      // Build sd_prompt string from scene data
+      const sdPrompt = result.scene
+        ? [result.scene.location, result.scene.lighting, result.scene.mood]
+            .filter(Boolean).join(', ')
+        : undefined;
+
+      // Map orchestrator result → SdDetails { name, view, features, action_context, clothing, look }
+      const firstChar = result.characters[0];
+      const sdDetails: SdDetails | undefined = result.scene
+        ? {
+            name: firstChar?.name ?? '',
+            view: firstChar?.view ?? '',
+            features: firstChar?.expression ?? '',
+            action_context: firstChar?.action ?? '',
+            clothing: firstChar?.clothing ?? '',
+            look: [
+              result.scene.location,
+              result.scene.time_of_day,
+              result.scene.lighting,
+              result.scene.mood,
+            ].filter(Boolean).join(', '),
+          }
+        : undefined;
+
+      let newMsg: ChatMessage = {
+        id: Date.now() + 1,
+        text: '',
+        sender: 'ai',
+        data: {
+          story: result.story_text,
+          sd_prompt: sdPrompt,
+          sd_details: sdDetails,
+        },
+      };
+
+      // If an image was generated, attach the file path
+      if (result.generated_image_path) {
+        newMsg.image = result.generated_image_path;
       }
+
       messages = [...messages, newMsg];
+
+      // Log any issues for debugging
+      if (result.parse_status !== 'ok') {
+        console.warn('[Orchestrator] Parse warnings:', result.parse_warnings);
+      }
+      if (result.image_generation_error) {
+        console.warn('[Orchestrator] Image gen error:', result.image_generation_error);
+      }
+
       if (isNew) await fetchChatList();
     } catch (err) {
-        messages = [...messages, { id: Date.now(), text: `Error: ${err}`, sender: 'ai' }];
-    } finally { isLoading = false; }
+      messages = [...messages, { id: Date.now(), text: `Error: ${err}`, sender: 'ai' }];
+    } finally {
+      isLoading = false;
+    }
   }
 
   async function fetchStoryList() {
@@ -240,7 +294,6 @@ l<script lang="ts">
   }
 
   onMount(() => {
-    // Apply theme on mount
     applyTheme($currentTheme);
     
     document.addEventListener('click', (e) => {
@@ -340,7 +393,6 @@ l<script lang="ts">
 
 <style>
   :global(:root) {
-    /* Default light theme - will be overridden by JS */
     --bg-primary: #ffffff;
     --bg-secondary: #f4f4f9;
     --bg-tertiary: #f9f9fc;
