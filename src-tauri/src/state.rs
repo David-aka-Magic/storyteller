@@ -181,5 +181,11 @@ impl OllamaState {
         // Index for image lookups
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_images_chat ON images(chat_id)")
             .execute(pool).await.ok();
+
+        // =====================================================================
+        // STORY MANAGER MIGRATIONS
+        // =====================================================================
+        // Adds session-tracking columns to story_premises (safe to run repeatedly)
+        crate::commands::story_manager::run_migrations(pool).await;
     }
 }

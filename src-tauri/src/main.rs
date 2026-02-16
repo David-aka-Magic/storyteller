@@ -132,10 +132,17 @@ fn main() {
             commands::chat::generate_story,
             commands::chat::regenerate_story,
             commands::chat::set_chat_character,
-            // Story commands
+            // Story commands (legacy — kept for backward compatibility)
             commands::story::save_story_premise,
             commands::story::get_story_list,
             commands::story::delete_stories,
+            // Story Manager commands (full session lifecycle)
+            commands::story_manager::create_story,
+            commands::story_manager::load_story,
+            commands::story_manager::save_story_state,
+            commands::story_manager::list_stories,
+            commands::story_manager::delete_story,
+            commands::story_manager::export_story,
             // Character & Image commands
             commands::images::save_character,
             commands::images::delete_character,
@@ -169,11 +176,11 @@ fn main() {
             comfyui_api::read_file_bytes,
             comfyui_api::read_file_base64,
             // Master Portrait commands
-             commands::master_portrait::generate_master_portrait,
-             commands::master_portrait::save_master_portrait,
-             commands::master_portrait::preview_portrait_prompt,
+            commands::master_portrait::generate_master_portrait,
+            commands::master_portrait::save_master_portrait,
+            commands::master_portrait::preview_portrait_prompt,
             // Orchestrator (unified story turn pipeline)
-             commands::orchestrator::process_story_turn,
+            commands::orchestrator::process_story_turn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

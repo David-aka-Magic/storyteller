@@ -5,3 +5,4 @@ pub mod character;
 pub mod chat_with_compression;
 pub mod master_portrait;
 pub mod orchestrator;
+pub mod story_manager;
