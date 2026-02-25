@@ -49,7 +49,7 @@
 
   // ── Form (matches src/lib/types.ts CharacterProfile) ──
   const getEmptyForm = (): CharacterProfile => ({
-    id: crypto.randomUUID() as `${string}-${string}-${string}-${string}-${string}`,
+    id: 0,
     name: '',
     age: 25,
     gender: 'Female',
@@ -147,7 +147,7 @@
     form.sd_prompt = parts.join(', ');
   }
 
-  // ── Generate 4 portrait options via ComfyUI ──
+  // ── Generate portrait(s) — tries ComfyUI first, falls back to SD ──
   async function generatePortraitBatch() {
     if (isGenerating) return;
     if (!form.name.trim()) {
@@ -163,6 +163,8 @@
 
     if (!form.sd_prompt) generateSdPrompt();
 
+    // Try ComfyUI first (batch of 4), then fall back to SD WebUI (single image)
+    // No pre-check — just try and let the actual request tell us if it works
     try {
       const result = await invoke<{
         images_base64: string[];
@@ -190,16 +192,18 @@
       generatedPaths = result.image_paths;
       form.sd_prompt = result.prompt_used;
       form.seed = result.seed !== -1 ? result.seed : undefined;
+      isGenerating = false;
+      return;
     } catch (e) {
       console.warn('[CharacterModal] ComfyUI failed, trying SD fallback:', e);
-      // Fallback to existing SD API single-image generation
-      await fallbackSingleGenerate();
-    } finally {
-      isGenerating = false;
     }
+
+    // SD WebUI fallback — single image
+    await fallbackSingleGenerate();
+    isGenerating = false;
   }
 
-  // ── Fallback to existing single-image SD API ──
+  // ── Single-image generation via SD WebUI API ──
   async function fallbackSingleGenerate() {
     try {
       const [base64, seedStr] = (await invoke('generate_character_portrait', {
@@ -214,7 +218,10 @@
       form.seed = parseInt(seedStr);
       generationError = '';
     } catch (fallbackErr) {
-      generationError = `Both ComfyUI and SD API failed. Is either running?\n${fallbackErr}`;
+      generationError =
+        `SD WebUI generation failed.\n\n` +
+        `Make sure SD WebUI is fully loaded (check http://127.0.0.1:7860).\n\n` +
+        `Details: ${fallbackErr}`;
     }
   }
 
@@ -228,25 +235,31 @@
   async function save() {
     if (!form.sd_prompt) generateSdPrompt();
 
+    // Save to backend first to get/confirm the ID
+    try {
+      const returnedId = await invoke<number>('save_character', { character: form });
+      // Update form.id with the real DB id (important for new characters where id was 0)
+      form.id = returnedId;
+    } catch (e) {
+      generationError = `Failed to save character: ${e}`;
+      console.error('[CharacterModal] Save failed:', e);
+      return;
+    }
+
     // If user selected a ComfyUI image, try to save as master reference
-    // (uses numeric character ID from backend — the string ID here is
-    //  converted by the backend on insert, so this is best-effort)
-    if (selectedIndex >= 0 && generatedPaths.length > 0) {
+    if (selectedIndex >= 0 && generatedPaths.length > 0 && form.id > 0) {
       try {
-        const numericId = parseInt(form.id);
-        if (!isNaN(numericId) && numericId > 0) {
-          await invoke<string>('save_master_portrait', {
-            request: {
-              character_id: numericId,
-              selected_index: selectedIndex,
-              image_paths: generatedPaths,
-              character_name: form.name,
-            },
-          });
-        }
+        await invoke<string>('save_master_portrait', {
+          request: {
+            character_id: form.id,
+            selected_index: selectedIndex,
+            image_paths: generatedPaths,
+            character_name: form.name,
+          },
+        });
       } catch (e) {
         console.warn('[CharacterModal] Could not save master image:', e);
-        // Non-fatal — character still saves with inline base64 image
+        // Non-fatal — character already saved with inline base64 image
       }
     }
 
@@ -427,9 +440,9 @@
           {#if isGenerating}
             Generating...
           {:else if generatedImages.length > 0}
-            🔄 Regenerate 4 Options
+            🔄 Regenerate Portrait
           {:else}
-            🎲 Generate 4 Portrait Options
+            🎲 Generate Portrait
           {/if}
         </button>
 

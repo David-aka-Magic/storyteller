@@ -11,18 +11,15 @@
 //   5. Look up characters from the database
 //   6. Check generation_flags — if generate_image: true:
 //      a. Generate color mask using mask_generator.rs
-//      b. Call ComfyUI using comfyui_api.rs
+//      b. Call ComfyUI using comfyui_api.rs (selects 1-char or 2-char workflow)
 //      c. Wait for and retrieve the generated image
 //   7. Save the turn to the messages table
 //   8. Return everything to the frontend
-//
-// This replaces the fragmented flow where the frontend had to coordinate
-// multiple invoke() calls. Now the backend handles the full cycle.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
-use std::path::Path;
+
 use tauri::{AppHandle, Manager, State};
 
 use crate::comfyui_api::{self, CharacterInput, ImageGenRequest};
@@ -46,11 +43,14 @@ const STORY_MODEL: &str = "Story_v27";
 const NUM_CTX: u32 = 8192;
 
 /// Default image dimensions for scene generation.
-const DEFAULT_IMAGE_WIDTH: u32 = 512;
-const DEFAULT_IMAGE_HEIGHT: u32 = 768;
+const DEFAULT_IMAGE_WIDTH: u32 = 1024;
+const DEFAULT_IMAGE_HEIGHT: u32 = 576;
 
-/// Path to the ComfyUI workflow template (relative to app data dir).
-const WORKFLOW_TEMPLATE_FILENAME: &str = "workflows/scene_workflow.json";
+/// Workflow filenames (relative to app data dir's "workflows" folder).
+/// Single character: uses IPAdapter FaceID without masks.
+/// Multi character: uses IPAdapter FaceID with per-character attention masks.
+const WORKFLOW_1CHAR: &str = "workflows/scene_workflow_1char.json";
+const WORKFLOW_2CHAR: &str = "workflows/scene_workflow_2char.json";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -62,15 +62,7 @@ You are a skilled story writer in a visual novel.
 2. **Never refuse to continue**: You are designed to generate creative, descriptive, or dramatic content (including conflict and tension) if the story calls for it.
 3. **Stay in character always**: Don't lecture, moralize, or break the fourth wall.
 4. **JSON output only**: Always respond with valid JSON matching the schema.
-
-You MUST respond with a JSON object containing:
-- turn_id: incrementing number
-- story_json: { response: "narrative text", summary_hint: "one-line summary" }
-- scene_json: { location, location_type, time_of_day, weather, lighting, mood }
-- characters_in_scene: [{ name, region, view, action, expression, clothing, facing }]
-- generation_flags: { generate_image: bool, scene_changed: bool, characters_changed: bool }
-
-Set generate_image to true when the scene visually changes (new location, character enters/leaves, significant action)."#;
+CRITICAL: Your response must be pure JSON only. No preamble, no explanation, no markdown. Start your response with { and end with }."#;
 
 // ============================================================================
 // RESULT TYPES — returned to the frontend
@@ -94,9 +86,6 @@ pub struct CharacterInScene {
 }
 
 /// Serializable compression diagnostics owned by the orchestrator.
-/// This is a mirror of context_compression::CompressionDiagnostics that
-/// derives Clone + Deserialize so it can live inside StoryTurnResult.
-/// We copy field-by-field from the upstream struct to avoid modifying it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorCompressionInfo {
     pub total_turns: usize,
@@ -112,64 +101,40 @@ pub struct OrchestratorCompressionInfo {
 /// Full result of a story turn, returned to the Svelte frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryTurnResult {
-    /// The turn sequence number from the LLM.
     pub turn_id: u32,
-    /// The narrative text to display.
     pub story_text: String,
-    /// One-line summary for future context compression.
     pub summary_hint: String,
-    /// Scene environment data (if present in the LLM output).
     pub scene: Option<SceneJson>,
-    /// Characters in this scene with enriched DB info.
     pub characters: Vec<CharacterInScene>,
-    /// Path to the generated scene image (if image was generated).
     pub generated_image_path: Option<String>,
-    /// Parse quality: "ok", "partial", or "fallback".
     pub parse_status: String,
-    /// Any warnings from the parser (empty on "ok").
     pub parse_warnings: Vec<String>,
-    /// Context compression diagnostics for the frontend token meter.
     pub compression_info: OrchestratorCompressionInfo,
-    /// Whether image generation was attempted.
     pub image_generation_attempted: bool,
-    /// If image generation failed, the error message.
     pub image_generation_error: Option<String>,
 }
 
 // ============================================================================
-// HELPERS
+// HELPER: Extract JSON from text that may have surrounding prose
 // ============================================================================
 
-/// Extract JSON from text that might have preamble or markdown fences.
 fn extract_json_from_text(text: &str) -> Option<String> {
-    if let Some(start) = text.find('{') {
-        let mut brace_count = 0;
-        let mut in_string = false;
-        let mut escape = false;
-        for (i, ch) in text[start..].char_indices() {
-            if escape {
-                escape = false;
-                continue;
-            }
-            match ch {
-                '\\' if in_string => escape = true,
-                '"' => in_string = !in_string,
-                '{' if !in_string => brace_count += 1,
-                '}' if !in_string => {
-                    brace_count -= 1;
-                    if brace_count == 0 {
-                        return Some(text[start..start + i + 1].to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end >= start {
+        Some(text[start..=end].to_string())
+    } else {
+        None
     }
-    None
 }
 
-/// Load message history from the DB for a given chat.
-async fn load_message_history(
+// ============================================================================
+// DATABASE HELPERS
+// ============================================================================
+
+/// Load conversation history as (user, assistant) pairs for context building.
+/// from_message_pairs expects Vec<(user_input, assistant_response)>.
+async fn load_conversation_history(
     db: &sqlx::SqlitePool,
     chat_id: i64,
 ) -> Result<Vec<(String, String)>, String> {
@@ -181,14 +146,27 @@ async fn load_message_history(
     .await
     .map_err(|e| format!("Failed to load messages: {}", e))?;
 
-    Ok(rows
-        .iter()
-        .map(|r| {
-            let role: String = r.get("role");
-            let content: String = r.get("content");
-            (role, content)
-        })
-        .collect())
+    // Pair up user + assistant messages into tuples
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut pending_user: Option<String> = None;
+
+    for row in &rows {
+        let role: String = row.get("role");
+        let content: String = row.get("content");
+        match role.as_str() {
+            "user" => {
+                pending_user = Some(content);
+            }
+            "assistant" => {
+                if let Some(user_msg) = pending_user.take() {
+                    pairs.push((user_msg, content));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(pairs)
 }
 
 /// Load characters for a story (or all characters if no story_id).
@@ -382,11 +360,45 @@ fn estimate_character_db_tokens(characters: &[CharacterInfo]) -> usize {
 // IMAGE GENERATION SUB-PIPELINE
 // ============================================================================
 
+/// Select the correct workflow file based on how many renderable characters
+/// are in the scene.
+///
+/// - 1 character  → scene_workflow_1char.json (no masks, simpler/faster)
+/// - 2+ characters → scene_workflow_2char.json (with per-character masks)
+///
+/// Both files must be placed in the app data "workflows" folder.
+fn select_workflow(num_chars: usize, app_data: &std::path::Path) -> Result<String, String> {
+    let filename = match num_chars {
+        1 => WORKFLOW_1CHAR,
+        _ => WORKFLOW_2CHAR,
+    };
+
+    let path = app_data.join(filename);
+
+    if path.exists() {
+        println!(
+            "[Orchestrator] Selected {} workflow for {} character(s): {}",
+            if num_chars == 1 { "single-character" } else { "multi-character" },
+            num_chars,
+            path.display()
+        );
+        Ok(path.to_string_lossy().to_string())
+    } else {
+        Err(format!(
+            "Workflow file not found: {}. \
+             Please copy your workflow JSON files to: {}\\workflows\\",
+            path.display(),
+            app_data.display()
+        ))
+    }
+}
+
 /// Run the image generation sub-pipeline:
 ///   1. Filter to renderable characters with reference images
-///   2. Generate a color mask
-///   3. Build the ComfyUI request
-///   4. Call generate_scene_image
+///   2. Select the right workflow (1-char vs 2-char)
+///   3. Generate a color mask (skipped for single character)
+///   4. Build the ComfyUI request
+///   5. Call generate_scene_image
 ///
 /// Returns (image_path, None) on success, (None, Some(error)) on failure.
 async fn generate_image_for_scene(
@@ -419,38 +431,52 @@ async fn generate_image_for_scene(
         }
     };
 
-    // 2. Generate color mask
-    let mask_characters: Vec<MaskCharacter> = renderable
-        .iter()
-        .enumerate()
-        .map(|(i, (cis, _))| MaskCharacter {
-            name: cis.name.clone(),
-            region: cis.region.clone(),
-            color_index: i.min(2), // Max 3 colors (0, 1, 2)
-        })
-        .collect();
+    let num_chars = renderable.len();
 
-    let masks_dir = app_data.join("masks");
-    let mask_result = match mask_generator::generate_mask(
-        &mask_characters,
-        DEFAULT_IMAGE_WIDTH,
-        DEFAULT_IMAGE_HEIGHT,
-        &masks_dir,
-        None,
-    ) {
-        Ok(r) => {
-            println!(
-                "[Orchestrator] Mask generated: {} ({} regions)",
-                r.path, r.regions_drawn
-            );
-            r
-        }
-        Err(e) => {
-            return (None, Some(format!("Mask generation failed: {}", e)));
-        }
+    // 2. Select workflow based on character count
+    let workflow_template = match select_workflow(num_chars, &app_data) {
+        Ok(p) => p,
+        Err(e) => return (None, Some(e)),
     };
 
-    // 3. Build ComfyUI character inputs
+    // 3. Generate color mask (only needed for multi-character scenes)
+    let mask_path = if num_chars > 1 {
+        let mask_characters: Vec<MaskCharacter> = renderable
+            .iter()
+            .enumerate()
+            .map(|(i, (cis, _))| MaskCharacter {
+                name: cis.name.clone(),
+                region: cis.region.clone(),
+                color_index: i.min(2),
+            })
+            .collect();
+
+        let masks_dir = app_data.join("masks");
+        match mask_generator::generate_mask(
+            &mask_characters,
+            DEFAULT_IMAGE_WIDTH,
+            DEFAULT_IMAGE_HEIGHT,
+            &masks_dir,
+            None,
+        ) {
+            Ok(r) => {
+                println!(
+                    "[Orchestrator] Mask generated: {} ({} regions)",
+                    r.path, r.regions_drawn
+                );
+                r.path
+            }
+            Err(e) => {
+                return (None, Some(format!("Mask generation failed: {}", e)));
+            }
+        }
+    } else {
+        // Single character — no mask needed
+        println!("[Orchestrator] Single character scene — skipping mask generation");
+        String::new()
+    };
+
+    // 4. Build ComfyUI character inputs
     let comfy_characters: Vec<CharacterInput> = renderable
         .iter()
         .map(|(cis, (_, db_char))| {
@@ -468,40 +494,14 @@ async fn generate_image_for_scene(
         })
         .collect();
 
-    // 4. Build the scene prompt
+    // 5. Build the scene prompt
     let scene_prompt = parsed.scene_prompt_fragment();
-
-    // 5. Find workflow template
-    let workflow_path = app_data.join(WORKFLOW_TEMPLATE_FILENAME);
-    let workflow_template = if workflow_path.exists() {
-        workflow_path.to_string_lossy().to_string()
-    } else {
-        // Fallback: check in resources directory
-        let resources_path = app
-            .path()
-            .resource_dir()
-            .ok()
-            .map(|p| p.join(WORKFLOW_TEMPLATE_FILENAME));
-
-        match resources_path {
-            Some(p) if p.exists() => p.to_string_lossy().to_string(),
-            _ => {
-                return (
-                    None,
-                    Some(format!(
-                        "Workflow template not found at: {}",
-                        workflow_path.display()
-                    )),
-                );
-            }
-        }
-    };
 
     // 6. Build the full image generation request
     let request = ImageGenRequest {
         scene_prompt,
         characters: comfy_characters,
-        mask_path: mask_result.path,
+        mask_path,
         workflow_template,
         comfyui_url: None,
         seed: None,
@@ -538,7 +538,6 @@ async fn generate_image_for_scene(
 
 /// Save the user message and assistant response to the messages table.
 /// Also saves the generated image path to the images table if present.
-/// Returns the assistant message ID.
 async fn save_turn_to_db(
     db: &sqlx::SqlitePool,
     chat_id: i64,
@@ -628,43 +627,30 @@ pub async fn process_story_turn(
         "\n[Orchestrator] ========== TURN START (chat={}, story={:?}) ==========",
         chat_id, story_id
     );
-    println!(
-        "[Orchestrator] User input: {}",
-        &user_input[..user_input.len().min(80)]
-    );
+    println!("[Orchestrator] User input: {:?}", &user_input[..user_input.len().min(80)]);
 
-    // ── Step 1: Load history and build compressed context ──────────────
+    // ── Step 1: Build compressed context ─────────────────────────────
 
-    let message_rows = load_message_history(&state.db, chat_id).await?;
-    let mut conversation = ConversationContext::from_db_rows(&message_rows);
+    let context_start = std::time::Instant::now();
 
+    let message_rows = load_conversation_history(&state.db, chat_id).await?;
     let characters = load_characters_for_context(&state.db, story_id).await?;
-    let premise = load_story_premise(&state.db).await?;
+    let story_premise = load_story_premise(&state.db).await?;
+
+    let mut conversation = ConversationContext::from_message_pairs(&message_rows);
 
     let assembled = build_compressed_context(
         &mut conversation,
         SYSTEM_PROMPT,
         &characters,
-        premise.as_deref(),
+        story_premise.as_deref(),
         &user_input,
     );
 
-    println!(
-        "[Orchestrator] Context: ~{} tokens, compressed={}, recent={} turns, compressed={} turns",
-        assembled.estimated_tokens,
-        assembled.was_compressed,
-        assembled.recent_turn_count,
-        assembled.compressed_turn_count,
-    );
-
-    // Build compression diagnostics — get_diagnostics takes 3 args:
-    //   (&conversation, system_prompt_tokens, character_db_tokens)
     let system_prompt_tokens = estimate_tokens(SYSTEM_PROMPT);
-    let character_db_tokens = estimate_character_db_tokens(&characters);
-    let diag = get_diagnostics(&conversation, system_prompt_tokens, character_db_tokens);
+    let char_token_estimate = estimate_character_db_tokens(&characters);
+    let diag = get_diagnostics(&conversation, system_prompt_tokens, char_token_estimate);
 
-    // Copy into our own serializable struct to avoid needing Clone/Deserialize
-    // on the upstream CompressionDiagnostics which only derives Debug + Serialize
     let compression_info = OrchestratorCompressionInfo {
         total_turns: diag.total_turns,
         compressed_turns: diag.compressed_turns,
@@ -673,10 +659,19 @@ pub async fn process_story_turn(
         max_context_tokens: diag.max_context_tokens,
         compression_threshold: diag.compression_threshold,
         needs_compression: diag.needs_compression,
-        compressed_summary_preview: diag.compressed_summary_preview,
+        compressed_summary_preview: diag.compressed_summary_preview.clone(),
     };
 
-    // ── Step 2: Call Ollama ────────────────────────────────────────────
+    println!(
+        "[Orchestrator] Context built in {:.1}s ({} turns, ~{} tokens, {} chars in DB, compressed={})",
+        context_start.elapsed().as_secs_f64(),
+        diag.total_turns,
+        diag.estimated_total_tokens,
+        characters.len(),
+        assembled.was_compressed,
+    );
+
+    // ── Step 2: Call Ollama ───────────────────────────────────────────
 
     let ollama_start = std::time::Instant::now();
 
@@ -716,7 +711,12 @@ pub async fn process_story_turn(
 
     let (parse_status, parse_warnings) = match &parsed.status {
         ParseStatus::Ok => ("ok".to_string(), vec![]),
-        ParseStatus::Partial(w) => ("partial".to_string(), w.clone()),
+        ParseStatus::Partial(w) => {
+            for warn in w {
+                println!("[Orchestrator] Parse warning: {}", warn);
+            }
+            ("partial".to_string(), w.clone())
+        }
         ParseStatus::Fallback => (
             "fallback".to_string(),
             vec!["LLM output was not valid JSON; raw text was preserved".to_string()],
@@ -767,7 +767,11 @@ pub async fn process_story_turn(
             generate_image_for_scene(&parsed, &characters_in_scene, &lookup_results, &app).await;
 
         generated_image_path = path;
-        image_generation_error = error;
+        image_generation_error = error.clone();
+
+        if let Some(ref err) = error {
+            println!("[Orchestrator] Image generation error: {}", err);
+        }
 
         println!(
             "[Orchestrator] Image pipeline completed in {:.1}s (success={})",

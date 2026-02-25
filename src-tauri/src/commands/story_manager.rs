@@ -116,6 +116,17 @@ pub struct ExportedTurn {
 /// Run migration to add story manager columns to story_premises.
 /// Called from state.rs setup_database. Safe to call multiple times.
 pub async fn run_migrations(pool: &sqlx::SqlitePool) {
+    // =========================================================================
+    // FIX: Ensure created_at exists on story_premises.
+    // On databases created before this column was added to the CREATE TABLE
+    // statement, the column may be missing. This ALTER is idempotent —
+    // .ok() silently swallows the "duplicate column" error from SQLite.
+    // =========================================================================
+    sqlx::query(
+        "ALTER TABLE story_premises ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+    )
+    .execute(pool).await.ok();
+
     // Add new columns to story_premises (silently fails if already exist)
     sqlx::query("ALTER TABLE story_premises ADD COLUMN last_played_at DATETIME DEFAULT CURRENT_TIMESTAMP")
         .execute(pool).await.ok();
@@ -278,7 +289,6 @@ pub async fn load_story(
         .map_err(|e| format!("Failed to load messages: {}", e))?;
 
         // Build turns from message pairs
-        let mut i = 0;
         let rows: Vec<(String, String)> = msg_rows
             .iter()
             .map(|r| (r.get::<String, _>("role"), r.get::<String, _>("content")))
@@ -462,42 +472,58 @@ pub async fn delete_story(
             .await
             .map_err(|e| format!("Failed to query images: {}", e))?;
 
-            for ir in &img_rows {
-                let path: String = ir.get("file_path");
+            for img_row in &img_rows {
+                let path: String = img_row.get("file_path");
                 image_paths.push(path);
             }
         }
 
-        // Also collect master portrait paths
-        let master_rows = sqlx::query(
+        // Also collect character master images
+        let char_img_rows = sqlx::query(
             "SELECT master_image_path FROM characters WHERE story_id = ? AND master_image_path IS NOT NULL"
         )
         .bind(story_id)
         .fetch_all(&state.db)
         .await
-        .map_err(|e| format!("Failed to query master images: {}", e))?;
+        .map_err(|e| format!("Failed to query character images: {}", e))?;
 
-        for mr in &master_rows {
-            let path: String = mr.get("master_image_path");
+        for row in &char_img_rows {
+            let path: String = row.get("master_image_path");
             image_paths.push(path);
         }
 
-        // 3. Delete from database (foreign keys cascade messages & images)
-        // Delete characters linked to this story
-        sqlx::query("DELETE FROM characters WHERE story_id = ?")
-            .bind(story_id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| format!("Failed to delete characters: {}", e))?;
+        if let Some(thumb) = thumbnail {
+            image_paths.push(thumb);
+        }
 
-        // Delete the chat (cascades to messages and images via FK)
+        // 3. Delete database records (order matters for foreign keys)
+        // Delete images first
         if let Some(cid) = chat_id {
+            sqlx::query("DELETE FROM images WHERE chat_id = ?")
+                .bind(cid)
+                .execute(&state.db)
+                .await
+                .ok();
+
+            sqlx::query("DELETE FROM messages WHERE chat_id = ?")
+                .bind(cid)
+                .execute(&state.db)
+                .await
+                .ok();
+
             sqlx::query("DELETE FROM chats WHERE id = ?")
                 .bind(cid)
                 .execute(&state.db)
                 .await
-                .map_err(|e| format!("Failed to delete chat: {}", e))?;
+                .ok();
         }
+
+        // Delete characters for this story
+        sqlx::query("DELETE FROM characters WHERE story_id = ?")
+            .bind(story_id)
+            .execute(&state.db)
+            .await
+            .ok();
 
         // Delete the story premise itself
         sqlx::query("DELETE FROM story_premises WHERE id = ?")
@@ -507,15 +533,13 @@ pub async fn delete_story(
             .map_err(|e| format!("Failed to delete story: {}", e))?;
 
         // 4. Clean up image files from disk (best-effort)
-        if let Some(thumb) = thumbnail {
-            image_paths.push(thumb);
+        for path in &image_paths {
+            let _ = std::fs::remove_file(path);
         }
 
-        let deleted_count = cleanup_image_files(&image_paths);
         println!(
-            "[StoryManager] Deleted story {} (cleaned up {}/{} image files)",
+            "[StoryManager] Deleted story {} (cleaned {} image files)",
             story_id,
-            deleted_count,
             image_paths.len()
         );
     } else {
@@ -525,7 +549,7 @@ pub async fn delete_story(
     Ok(())
 }
 
-/// Export a story to a file. Returns the file path.
+/// Export a story as JSON or HTML.
 #[tauri::command]
 pub async fn export_story(
     story_id: i64,
@@ -533,17 +557,47 @@ pub async fn export_story(
     state: State<'_, OllamaState>,
     app: AppHandle,
 ) -> Result<String, String> {
-    // Load the full session first
     let session = load_story_internal(&state.db, story_id).await?;
 
-    // Build export data
-    let now = chrono_now_string();
+    let now = {
+        let duration = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        format!("{}", duration.as_secs())
+    };
 
     match format {
         ExportFormat::Json => {
-            let exported = build_json_export(&session, &state.db, &now).await?;
-            let json_str = serde_json::to_string_pretty(&exported)
-                .map_err(|e| format!("JSON serialization failed: {}", e))?;
+            let exported = ExportedStory {
+                meta: ExportedMeta {
+                    story_id: session.story_id,
+                    title: session.title.clone(),
+                    description: session.description.clone(),
+                    total_turns: session.total_turns,
+                    created_at: session.created_at.clone(),
+                    last_played_at: session.last_played_at.clone(),
+                    current_location: session.current_location.clone(),
+                    exported_at: now.clone(),
+                },
+                characters: session.characters.clone(),
+                compressed_history: session.compressed_history.clone(),
+                turns: session
+                    .recent_turns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| ExportedTurn {
+                        turn_number: i + 1,
+                        user_input: t.user_input.clone(),
+                        story_text: t.assistant_response.clone(),
+                        summary_hint: t.summary_hint.clone(),
+                        timestamp: String::new(),
+                        image_path: None,
+                    })
+                    .collect(),
+            };
+
+            let json = serde_json::to_string_pretty(&exported)
+                .map_err(|e| format!("Failed to serialize export: {}", e))?;
 
             let export_dir = app
                 .path()
@@ -564,17 +618,48 @@ pub async fn export_story(
             let filename = format!("{}_{}.json", safe_title, now.replace(':', "-"));
             let filepath = export_dir.join(&filename);
 
-            std::fs::write(&filepath, json_str)
+            std::fs::write(&filepath, json)
                 .map_err(|e| format!("Failed to write export file: {}", e))?;
 
             let path_str = filepath.to_string_lossy().to_string();
-            println!("[StoryManager] Exported story {} to {}", story_id, path_str);
+            println!("[StoryManager] Exported story {} as JSON to {}", story_id, path_str);
 
             Ok(path_str)
         }
         ExportFormat::Html => {
-            let exported = build_json_export(&session, &state.db, &now).await?;
-            let html = build_html_export(&exported);
+            // Build a simple HTML export
+            let mut html = String::new();
+            html.push_str("<!DOCTYPE html><html><head><meta charset='utf-8'>");
+            html.push_str(&format!("<title>{}</title>", session.title));
+            html.push_str("<style>body{font-family:Georgia,serif;max-width:800px;margin:0 auto;padding:20px;background:#1a1a2e;color:#e0e0e0}");
+            html.push_str("h1{color:#e94560;border-bottom:2px solid #e94560;padding-bottom:10px}");
+            html.push_str(".turn{margin:20px 0;padding:15px;background:#16213e;border-radius:8px}");
+            html.push_str(".user-input{color:#4ecca3;font-style:italic;margin-bottom:8px}");
+            html.push_str(".story-text{line-height:1.6}");
+            html.push_str(".meta{color:#888;font-size:0.9em;margin-bottom:20px}");
+            html.push_str("</style></head><body>");
+
+            html.push_str(&format!("<h1>{}</h1>", session.title));
+            html.push_str(&format!(
+                "<div class='meta'><p>{}</p><p>Turns: {} | Exported: {}</p></div>",
+                session.description, session.total_turns, now
+            ));
+
+            for (i, turn) in session.recent_turns.iter().enumerate() {
+                html.push_str("<div class='turn'>");
+                html.push_str(&format!(
+                    "<div class='user-input'>Turn {}: {}</div>",
+                    i + 1,
+                    turn.user_input
+                ));
+                html.push_str(&format!(
+                    "<div class='story-text'>{}</div>",
+                    turn.assistant_response
+                ));
+                html.push_str("</div>");
+            }
+
+            html.push_str("</body></html>");
 
             let export_dir = app
                 .path()
@@ -707,298 +792,4 @@ async fn load_story_internal(
         last_played_at,
         chat_id,
     })
-}
-
-/// Build the JSON export payload.
-async fn build_json_export(
-    session: &StorySession,
-    db: &sqlx::SqlitePool,
-    exported_at: &str,
-) -> Result<ExportedStory, String> {
-    // Build turns from messages with timestamps and images
-    let mut turns: Vec<ExportedTurn> = Vec::new();
-
-    if let Some(cid) = session.chat_id {
-        let msg_rows = sqlx::query(
-            "SELECT role, content, timestamp FROM messages WHERE chat_id = ? ORDER BY timestamp ASC"
-        )
-        .bind(cid)
-        .fetch_all(db)
-        .await
-        .map_err(|e| format!("Failed to load messages for export: {}", e))?;
-
-        let mut turn_number = session.compressed_history.compressed_turn_ids.len() + 1;
-        let mut i = 0;
-
-        while i < msg_rows.len() {
-            let role: String = msg_rows[i].get("role");
-            let content: String = msg_rows[i].get("content");
-            let timestamp: String = msg_rows[i].get::<Option<String>, _>("timestamp").unwrap_or_default();
-
-            if role == "user" {
-                let user_input = content;
-                let mut story_text = String::new();
-                let mut summary_hint = String::new();
-                let mut assistant_timestamp = timestamp.clone();
-
-                // Look ahead for assistant response
-                if i + 1 < msg_rows.len() {
-                    let next_role: String = msg_rows[i + 1].get("role");
-                    if next_role == "assistant" {
-                        i += 1;
-                        let assistant_content: String = msg_rows[i].get("content");
-                        assistant_timestamp = msg_rows[i].get::<Option<String>, _>("timestamp").unwrap_or_default();
-
-                        // Try to parse the JSON response for story text
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&assistant_content) {
-                            story_text = parsed["story_json"]["response"]
-                                .as_str()
-                                .or_else(|| parsed["response"].as_str())
-                                .unwrap_or(&assistant_content)
-                                .to_string();
-                            summary_hint = parsed["story_json"]["summary_hint"]
-                                .as_str()
-                                .or_else(|| parsed["summary_hint"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                        } else {
-                            story_text = assistant_content;
-                        }
-                    }
-                }
-
-                // Check for associated image
-                let image_path: Option<String> = if let Some(cid_val) = session.chat_id {
-                    sqlx::query(
-                        "SELECT file_path FROM images
-                         WHERE chat_id = ? AND message_id IN (
-                             SELECT id FROM messages WHERE chat_id = ? AND content = ?
-                         ) LIMIT 1"
-                    )
-                    .bind(cid_val)
-                    .bind(cid_val)
-                    .bind(&story_text)
-                    .fetch_optional(db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|r| r.get("file_path"))
-                } else {
-                    None
-                };
-
-                turns.push(ExportedTurn {
-                    turn_number,
-                    user_input,
-                    story_text,
-                    summary_hint,
-                    timestamp: assistant_timestamp,
-                    image_path,
-                });
-
-                turn_number += 1;
-            }
-            i += 1;
-        }
-    }
-
-    Ok(ExportedStory {
-        meta: ExportedMeta {
-            story_id: session.story_id,
-            title: session.title.clone(),
-            description: session.description.clone(),
-            total_turns: session.total_turns,
-            created_at: session.created_at.clone(),
-            last_played_at: session.last_played_at.clone(),
-            current_location: session.current_location.clone(),
-            exported_at: exported_at.to_string(),
-        },
-        characters: session.characters.clone(),
-        compressed_history: session.compressed_history.clone(),
-        turns,
-    })
-}
-
-/// Build an HTML export from the exported story data.
-fn build_html_export(exported: &ExportedStory) -> String {
-    let mut html = String::new();
-
-    html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
-    html.push_str("<meta charset=\"UTF-8\">\n");
-    html.push_str(&format!("<title>{}</title>\n", exported.meta.title));
-    html.push_str("<style>\n");
-    html.push_str("body { font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 2rem; background: #1a1a2e; color: #e0e0e0; }\n");
-    html.push_str("h1 { color: #e94560; border-bottom: 2px solid #e94560; padding-bottom: 0.5rem; }\n");
-    html.push_str("h2 { color: #0f3460; }\n");
-    html.push_str(".meta { color: #888; font-size: 0.9em; margin-bottom: 2rem; }\n");
-    html.push_str(".turn { margin: 1.5rem 0; padding: 1rem; border-left: 3px solid #0f3460; background: #16213e; border-radius: 4px; }\n");
-    html.push_str(".user-input { color: #e94560; font-style: italic; margin-bottom: 0.5rem; }\n");
-    html.push_str(".story-text { line-height: 1.7; }\n");
-    html.push_str(".character { display: inline-block; padding: 0.25rem 0.75rem; margin: 0.25rem; background: #0f3460; border-radius: 12px; font-size: 0.85em; }\n");
-    html.push_str(".summary { background: #16213e; padding: 1rem; border-radius: 8px; margin: 1rem 0; font-style: italic; }\n");
-    html.push_str("</style>\n</head>\n<body>\n");
-
-    // Header
-    html.push_str(&format!("<h1>{}</h1>\n", exported.meta.title));
-    html.push_str(&format!("<p class=\"meta\">{}</p>\n", exported.meta.description));
-    html.push_str(&format!(
-        "<p class=\"meta\">Created: {} | Turns: {} | Exported: {}</p>\n",
-        exported.meta.created_at, exported.meta.total_turns, exported.meta.exported_at
-    ));
-
-    // Characters
-    if !exported.characters.is_empty() {
-        html.push_str("<h2>Characters</h2>\n<div>\n");
-        for ch in &exported.characters {
-            html.push_str(&format!("<span class=\"character\">{}</span>\n", ch.name));
-        }
-        html.push_str("</div>\n");
-    }
-
-    // Compressed history (story so far)
-    if !exported.compressed_history.story_so_far.is_empty() {
-        html.push_str("<h2>Story So Far</h2>\n");
-        html.push_str(&format!(
-            "<div class=\"summary\">{}</div>\n",
-            exported.compressed_history.story_so_far.replace('\n', "<br>")
-        ));
-    }
-
-    // Turns
-    html.push_str("<h2>Story</h2>\n");
-    for turn in &exported.turns {
-        html.push_str("<div class=\"turn\">\n");
-        html.push_str(&format!(
-            "<div class=\"user-input\">▸ {}</div>\n",
-            turn.user_input
-        ));
-        html.push_str(&format!(
-            "<div class=\"story-text\">{}</div>\n",
-            turn.story_text.replace('\n', "<br>")
-        ));
-        html.push_str("</div>\n");
-    }
-
-    html.push_str("</body>\n</html>");
-    html
-}
-
-/// Delete image files from disk (best-effort, non-fatal).
-fn cleanup_image_files(paths: &[String]) -> usize {
-    let mut deleted = 0;
-    for path in paths {
-        if std::fs::remove_file(path).is_ok() {
-            deleted += 1;
-        }
-    }
-    deleted
-}
-
-/// Get current UTC timestamp as a string.
-fn chrono_now_string() -> String {
-    // Use a simple approach without adding chrono dependency
-    // This matches SQLite's CURRENT_TIMESTAMP format
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-
-    // Simple UTC formatting (year-month-day hour:minute:second)
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    // Approximate date calculation (good enough for export filenames)
-    let mut year = 1970u64;
-    let mut remaining_days = days;
-    loop {
-        let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        year += 1;
-    }
-    let month_days = [31, 28 + if year % 4 == 0 { 1 } else { 0 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1u64;
-    for md in &month_days {
-        if remaining_days < *md {
-            break;
-        }
-        remaining_days -= md;
-        month += 1;
-    }
-    let day = remaining_days + 1;
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}",
-        year, month, day, hours, minutes, seconds
-    )
-}
-
-// ============================================================================
-// TESTS
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_chrono_now_string_format() {
-        let ts = chrono_now_string();
-        // Should be in format YYYY-MM-DDTHH-MM-SS
-        assert!(ts.len() >= 19);
-        assert!(ts.contains('T'));
-    }
-
-    #[test]
-    fn test_build_html_export() {
-        let exported = ExportedStory {
-            meta: ExportedMeta {
-                story_id: 1,
-                title: "Test Story".to_string(),
-                description: "A test".to_string(),
-                total_turns: 2,
-                created_at: "2025-01-01".to_string(),
-                last_played_at: "2025-01-02".to_string(),
-                current_location: Some("Forest".to_string()),
-                exported_at: "2025-01-03".to_string(),
-            },
-            characters: vec![],
-            compressed_history: CompressedHistory::default(),
-            turns: vec![
-                ExportedTurn {
-                    turn_number: 1,
-                    user_input: "Look around".to_string(),
-                    story_text: "You see a forest.".to_string(),
-                    summary_hint: "Player looks around forest.".to_string(),
-                    timestamp: "2025-01-01".to_string(),
-                    image_path: None,
-                },
-            ],
-        };
-
-        let html = build_html_export(&exported);
-        assert!(html.contains("Test Story"));
-        assert!(html.contains("Look around"));
-        assert!(html.contains("You see a forest."));
-        assert!(html.contains("<!DOCTYPE html>"));
-    }
-
-    #[test]
-    fn test_export_format_serde() {
-        let json_fmt: ExportFormat = serde_json::from_str("\"json\"").unwrap();
-        assert!(matches!(json_fmt, ExportFormat::Json));
-
-        let html_fmt: ExportFormat = serde_json::from_str("\"html\"").unwrap();
-        assert!(matches!(html_fmt, ExportFormat::Html));
-    }
 }

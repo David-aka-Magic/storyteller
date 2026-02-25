@@ -150,6 +150,7 @@ fn main() {
             commands::images::generate_image,
             commands::images::generate_image_variation,
             commands::images::generate_character_portrait,
+            commands::images::diagnose_sd_connection,
             // Service commands
             services::check_services_status,
             services::start_services,

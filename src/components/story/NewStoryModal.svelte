@@ -26,7 +26,7 @@
   // ── Form Data ──
   let title = '';
   let description = '';
-  let selectedCharIds: Set<string> = new Set();
+  let selectedCharIds: Set<number> = new Set();
 
   // ── Validation ──
   $: titleValid = title.trim().length >= 2;
@@ -49,7 +49,7 @@
     if (step > 1) step--;
   }
 
-  function toggleCharacter(id: string) {
+  function toggleCharacter(id: number) {
     if (selectedCharIds.has(id)) {
       selectedCharIds.delete(id);
     } else {
@@ -63,7 +63,7 @@
     dispatch('create', {
       title: title.trim(),
       description: description.trim(),
-      characterIds: Array.from(selectedCharIds).map(id => parseInt(id, 10)).filter(n => !isNaN(n)),
+      characterIds: Array.from(selectedCharIds),
     });
   }
 

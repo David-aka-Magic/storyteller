@@ -1,3 +1,5 @@
+// src/lib/types.ts
+
 export interface ChatMessage {
   id: number;
   text: string;
@@ -40,7 +42,8 @@ export interface StoryPremise {
 }
 
 export interface CharacterProfile {
-  id: string;
+  id: number;                   // ← FIXED: was string, Rust backend expects i64
+  story_id?: number;
   name: string;
   age: number;
   gender: string;
@@ -50,8 +53,10 @@ export interface CharacterProfile {
   body_type: string;
   personality: string;
   additional_notes: string;
+  default_clothing?: string;
   sd_prompt: string;
   image?: string;
+  master_image_path?: string;
   seed?: number;
   art_style?: string;
 }

@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://localhost:*; connect-src 'self' http://localhost:*"
+      "csp": "default-src 'self' http://localhost:* http://127.0.0.1:*; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: blob: http://127.0.0.1:*"
     }
   },
   "bundle": {

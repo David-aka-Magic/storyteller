@@ -1,0 +1,83 @@
+/* src/app.css */
+/* 
+ * StoryEngine - Global Styles
+ * Overrides default SvelteKit+Tauri template styles that restrict layout width.
+ * The default template uses place-items:center and max-width which prevents
+ * our 3-panel layout from filling the window.
+ */
+
+/* ── Reset: remove ALL restrictive defaults ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary, #0f0f23);
+  color: var(--text-primary, #e0e0e0);
+  font-family: 'Segoe UI', Arial, sans-serif;
+}
+
+/* Override SvelteKit's #app container if it exists */
+#app,
+[data-sveltekit-preload-data],
+body > div {
+  display: contents !important;
+}
+
+/* Override any container/wrapper that SvelteKit injects */
+.container {
+  max-width: none !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Ensure nothing centers or constrains the layout */
+:root {
+  --bg-primary: #0f0f23;
+  --bg-secondary: #1a1a2e;
+  --bg-tertiary: #16213e;
+  --bg-chat: #0f0f23;
+  --bg-message: #1a1a2e;
+  --bg-message-user: #0f3460;
+  --bg-message-ai: #1a1a2e;
+  --bg-hover: #2a2a4a;
+  --bg-active: #4a9eff;
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0a0;
+  --text-muted: #666666;
+  --text-inverse: #ffffff;
+  --border-primary: #2a2a4a;
+  --border-secondary: #1f1f3a;
+  --border-active: #4a9eff;
+  --accent-primary: #4a9eff;
+  --accent-secondary: #6c757d;
+  --accent-success: #00b894;
+  --accent-danger: #e94560;
+  --accent-warning: #ffc107;
+  --shadow: rgba(0, 0, 0, 0.3);
+}
+
+/* Scrollbar styling for the dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

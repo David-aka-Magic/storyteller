@@ -15,8 +15,8 @@
   Dispatches:
     'openCharacterModal'  → { character: CharacterProfile | null, mode: 'create' | 'edit' }
     'openPortraitGen'     → CharacterProfile (to open MasterPortraitGenerator)
-    'deleteCharacter'     → character id (string)
-    'deleteCharacters'    → string[] (batch)
+    'deleteCharacter'     → character id (number)
+    'deleteCharacters'    → number[] (batch)
     'close'               → dismiss panel (when used as slide-out)
 
   Props:
@@ -37,9 +37,9 @@
 
   // ── Batch Selection ──
   let isSelecting = false;
-  let selectedIds: Set<string> = new Set();
+  let selectedIds: Set<number> = new Set();
 
-  function toggleSelect(id: string) {
+  function toggleSelect(id: number) {
     if (selectedIds.has(id)) {
       selectedIds.delete(id);
     } else {
@@ -87,7 +87,7 @@
     dispatch('openCharacterModal', { character: e.detail, mode: 'edit' });
   }
 
-  function handleDelete(e: CustomEvent<string>) {
+  function handleDelete(e: CustomEvent<number>) {
     dispatch('deleteCharacter', e.detail);
   }
 
@@ -95,7 +95,7 @@
     dispatch('openPortraitGen', e.detail);
   }
 
-  function handleToggleSelect(e: CustomEvent<string>) {
+  function handleToggleSelect(e: CustomEvent<number>) {
     toggleSelect(e.detail);
   }
 

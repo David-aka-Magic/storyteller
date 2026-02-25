@@ -19,6 +19,7 @@
 //   4. Update the character database with the master_image_path
 
 use base64::Engine;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -35,13 +36,13 @@ const DEFAULT_COMFYUI_URL: &str = "http://127.0.0.1:8188";
 
 /// Recommended settings for master portrait generation.
 /// These produce clean, detailed portraits ideal for IP-Adapter reference.
-const PORTRAIT_STEPS: u32 = 30;
-const PORTRAIT_CFG: f64 = 5.5;
+const PORTRAIT_STEPS: u32 = 20;
+const PORTRAIT_CFG: f64 = 7.0;
 const PORTRAIT_WIDTH: u32 = 832;
 const PORTRAIT_HEIGHT: u32 = 1216;
 const PORTRAIT_BATCH_SIZE: u32 = 4;
-const PORTRAIT_SAMPLER: &str = "dpmpp_2m_sde";
-const PORTRAIT_SCHEDULER: &str = "karras";
+const PORTRAIT_SAMPLER: &str = "euler_ancestral";
+const PORTRAIT_SCHEDULER: &str = "normal";
 const PORTRAIT_TIMEOUT_SECS: u64 = 300;
 const POLL_INTERVAL_MS: u64 = 1000;
 
@@ -74,7 +75,7 @@ pub struct MasterPortraitRequest {
     /// Optional: user-edited prompt override. If set, skips auto-generation.
     #[serde(default)]
     pub custom_prompt: Option<String>,
-    /// Optional: specific seed for reproducibility (-1 = random).
+    /// Optional: specific seed for reproducibility. None or negative = random.
     #[serde(default)]
     pub seed: Option<i64>,
     /// Optional: ComfyUI base URL override.
@@ -286,10 +287,9 @@ fn build_negative_prompt(art_style: Option<&str>) -> String {
 }
 
 // ============================================================================
-// COMFYUI HTTP HELPERS (self-contained — no private imports)
+// HTTP HELPERS
 // ============================================================================
 
-/// Build a reqwest client with timeout.
 fn http_client(timeout_secs: u64) -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
@@ -297,16 +297,15 @@ fn http_client(timeout_secs: u64) -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// Check if ComfyUI is reachable.
+/// Ping ComfyUI's /system_stats to confirm it's reachable.
 async fn check_health(base_url: &str) -> Result<(), String> {
-    let client = http_client(3);
+    let client = http_client(5);
     let url = format!("{}/system_stats", base_url);
-
     let resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("Cannot connect to ComfyUI at {}: {}", base_url, e))?;
+        .map_err(|e| format!("Cannot reach ComfyUI at {}: {}", base_url, e))?;
 
     if resp.status().is_success() {
         Ok(())
@@ -315,24 +314,24 @@ async fn check_health(base_url: &str) -> Result<(), String> {
     }
 }
 
-/// Queue a workflow prompt. Returns prompt_id.
+/// POST the workflow JSON to /prompt and return the prompt_id.
 async fn queue_workflow(base_url: &str, workflow: &Value) -> Result<String, String> {
-    let client = http_client(15);
+    let client = http_client(30);
     let url = format!("{}/prompt", base_url);
 
-    let payload = json!({ "prompt": workflow });
+    let body = json!({ "prompt": workflow });
 
     let resp = client
         .post(&url)
-        .json(&payload)
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("POST /prompt failed: {}", e))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Queue returned {}: {}", status, body));
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Queue returned {}: {}", status, text));
     }
 
     let result: Value = resp
@@ -343,93 +342,98 @@ async fn queue_workflow(base_url: &str, workflow: &Value) -> Result<String, Stri
     result["prompt_id"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "No 'prompt_id' in queue response".to_string())
+        .ok_or_else(|| "No prompt_id in queue response".to_string())
 }
 
-/// Poll /history/{prompt_id} until complete. Returns list of output images.
+/// Poll GET /history/{prompt_id} until the job completes or times out.
 async fn poll_until_complete(
     base_url: &str,
     prompt_id: &str,
     timeout_secs: u64,
 ) -> Result<Vec<OutputImage>, String> {
-    let client = http_client(10);
+    let client = http_client(30);
     let url = format!("{}/history/{}", base_url, prompt_id);
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_secs(timeout_secs);
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
 
     loop {
-        if start.elapsed() > timeout {
+        if std::time::Instant::now() > deadline {
             return Err(format!(
-                "Generation timed out after {}s for prompt {}",
-                timeout_secs, prompt_id
+                "Timed out after {}s waiting for ComfyUI generation",
+                timeout_secs
             ));
         }
 
         tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
 
-        let resp = match client.get(&url).send().await {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("GET /history failed: {}", e))?;
 
         if !resp.status().is_success() {
             continue;
         }
 
-        let history: Value = match resp.json().await {
-            Ok(v) => v,
-            Err(_) => continue,
+        let history: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Invalid history response: {}", e))?;
+
+        let entry = match history.get(prompt_id) {
+            Some(e) => e,
+            None => continue, // Not ready yet
         };
 
-        if let Some(entry) = history.get(prompt_id) {
-            // Check for execution error
-            if let Some(status) = entry.get("status") {
-                if let Some(status_str) = status.get("status_str").and_then(|s| s.as_str()) {
-                    if status_str == "error" {
-                        let messages = status
-                            .get("messages")
-                            .and_then(|m| serde_json::to_string(m).ok())
-                            .unwrap_or_else(|| "unknown error".to_string());
-                        return Err(format!("ComfyUI execution error: {}", messages));
+        // Check for errors
+        if let Some(status) = entry.get("status") {
+            if let Some(msgs) = status.get("messages") {
+                if let Some(arr) = msgs.as_array() {
+                    for msg in arr {
+                        if msg.get(0).and_then(|v| v.as_str()) == Some("execution_error") {
+                            let detail = msg.get(1).cloned().unwrap_or(Value::Null);
+                            return Err(format!("ComfyUI execution error: {}", detail));
+                        }
                     }
                 }
             }
+        }
 
-            // Collect output images from all output nodes
-            if let Some(outputs) = entry.get("outputs") {
-                let mut images = Vec::new();
+        // Look for outputs
+        if let Some(outputs) = entry.get("outputs") {
+            let mut images = Vec::new();
 
-                if let Some(outputs_obj) = outputs.as_object() {
-                    for (_node_id, node_output) in outputs_obj {
-                        if let Some(img_list) = node_output.get("images") {
-                            if let Some(arr) = img_list.as_array() {
-                                for img_val in arr {
-                                    if let Ok(img) =
-                                        serde_json::from_value::<OutputImage>(img_val.clone())
-                                    {
-                                        images.push(img);
-                                    }
+            if let Some(outputs_obj) = outputs.as_object() {
+                for (_node_id, node_output) in outputs_obj {
+                    if let Some(img_list) = node_output.get("images") {
+                        if let Some(arr) = img_list.as_array() {
+                            for img_val in arr {
+                                if let Ok(img) =
+                                    serde_json::from_value::<OutputImage>(img_val.clone())
+                                {
+                                    images.push(img);
                                 }
                             }
                         }
                     }
                 }
+            }
 
-                if !images.is_empty() {
-                    return Ok(images);
-                }
+            if !images.is_empty() {
+                return Ok(images);
+            }
 
-                if outputs.as_object().map_or(false, |o| !o.is_empty()) {
-                    return Err(
-                        "Workflow completed but no images were found in outputs".to_string()
-                    );
-                }
+            // Outputs exist but no images found
+            if outputs.as_object().map_or(false, |o| !o.is_empty()) {
+                return Err(
+                    "Workflow completed but no images were found in outputs".to_string()
+                );
             }
         }
     }
 }
 
-/// Download a single image from ComfyUI /view endpoint and save to disk.
+/// Download a single output image from ComfyUI to local disk.
 async fn download_output_image(
     base_url: &str,
     image: &OutputImage,
@@ -482,7 +486,7 @@ fn build_portrait_workflow(
     art_style: Option<&str>,
 ) -> Value {
     let ckpt_name = match art_style {
-        Some("Anime") => "animagineXLV31_v31.safetensors",
+        Some("Anime") => "animagine-xl-3.1.safetensors",
         _ => "juggernautXL_ragnarokBy.safetensors",
     };
 
@@ -593,9 +597,16 @@ pub async fn generate_master_portrait(
     // 2. Build prompts
     let prompt = build_portrait_prompt(&request);
     let negative = build_negative_prompt(request.art_style.as_deref());
-    let seed = request.seed.unwrap_or(-1);
+
+    // FIX: ComfyUI requires seed >= 0. Generate a random seed if none provided
+    // or if a negative value was passed (old sentinel value).
+    let seed = match request.seed {
+        Some(s) if s >= 0 => s,
+        _ => rand::thread_rng().gen_range(0..i64::MAX),
+    };
 
     println!("[MasterPortrait] Prompt: {}", prompt);
+    println!("[MasterPortrait] Seed: {}", seed);
     println!(
         "[MasterPortrait] Generating batch of {} portraits...",
         PORTRAIT_BATCH_SIZE
@@ -842,16 +853,32 @@ mod tests {
 
     #[test]
     fn test_anime_uses_different_checkpoint() {
-        let workflow = build_portrait_workflow("test", "neg", -1, Some("Anime"));
+        let workflow = build_portrait_workflow("test", "neg", 0, Some("Anime"));
         assert_eq!(
             workflow["1"]["inputs"]["ckpt_name"],
-            "animagineXLV31_v31.safetensors"
+            "animagine-xl-3.1.safetensors"
         );
 
-        let workflow_real = build_portrait_workflow("test", "neg", -1, Some("Realistic"));
+        let workflow_real = build_portrait_workflow("test", "neg", 0, Some("Realistic"));
         assert_eq!(
             workflow_real["1"]["inputs"]["ckpt_name"],
             "juggernautXL_ragnarokBy.safetensors"
         );
+    }
+
+    #[test]
+    fn test_seed_is_never_negative() {
+        // Simulate the seed resolution logic from generate_master_portrait
+        let resolve_seed = |opt: Option<i64>| -> i64 {
+            match opt {
+                Some(s) if s >= 0 => s,
+                _ => 12345, // mock random
+            }
+        };
+
+        assert_eq!(resolve_seed(Some(42)), 42);
+        assert_eq!(resolve_seed(Some(0)), 0);
+        assert_eq!(resolve_seed(Some(-1)), 12345); // was the bug
+        assert_eq!(resolve_seed(None), 12345);
     }
 }

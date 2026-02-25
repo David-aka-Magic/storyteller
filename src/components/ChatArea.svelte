@@ -65,50 +65,47 @@
   }
 
   async function generateImage(msg: ChatMessage, index: number) {
-    const promptToUse = msg.data?.sd_prompt || msg.data?.story;
-    if (!promptToUse) {
-        alert("No text available to generate an image.");
-        return;
-    }
-
-    generatingImages.add(msg.id);
-    generatingImages = generatingImages; 
-
-    try {
-        let base64 = "";
-
-        if (msg.image) {
-             base64 = await invoke('generate_image_variation', { 
-                prompt: promptToUse,
-                imageBase64: msg.image
-            }) as string;
-        } else {
-            const result = await invoke('generate_image', { 
-                prompt: promptToUse
-            }) as [string, string];
-            base64 = result[0];
-        }
-        
-        const msgIdx = messages.findIndex(m => m.id === msg.id);
-        if (msgIdx !== -1) {
-            messages[msgIdx].image = base64;
-            messages = messages; 
-        }
-    } catch (e) {
-        console.error("Image gen failed:", e);
-        alert("Failed to generate image: " + e);
-    } finally {
-        generatingImages.delete(msg.id);
-        generatingImages = generatingImages; 
-    }
+      const promptToUse = msg.data?.sd_prompt || msg.data?.story;
+      if (!promptToUse) {
+          alert("No text available to generate an image.");
+          return;
+      }
+  
+      generatingImages.add(msg.id);
+      generatingImages = generatingImages;
+  
+      try {
+          // Use ComfyUI scene generation instead of SD WebUI
+          const result = await invoke<{
+              images_base64: string[];
+              image_paths: string[];
+              prompt_used: string;
+              seed: number;
+              prompt_id: string;
+          }>('generate_master_portrait', {
+              request: {
+                  name: 'scene',
+                  custom_prompt: promptToUse,
+                  art_style: 'Realistic',
+                  seed: null,
+              }
+          });
+  
+          const base64 = result.images_base64[0];
+  
+          const msgIdx = messages.findIndex(m => m.id === msg.id);
+          if (msgIdx !== -1) {
+              messages[msgIdx].image = base64;
+              messages = messages;
+          }
+      } catch (e) {
+          console.error("Image gen failed:", e);
+          alert("Failed to generate image: " + e);
+      } finally {
+          generatingImages.delete(msg.id);
+          generatingImages = generatingImages;
+      }
   }
-
-  afterUpdate(() => {
-    if (isLoading) {
-        const msgBox = document.getElementById('message-box');
-        if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
-    }
-  });
 </script>
 
 <div class="chat-main">

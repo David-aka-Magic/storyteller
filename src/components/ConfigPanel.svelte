@@ -1,22 +1,27 @@
+<!-- src/components/ConfigPanel.svelte -->
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import type { StoryPremise, CharacterProfile } from '../lib/types';
 
   export let stories: StoryPremise[] = [];
   export let characters: CharacterProfile[] = [];
   export let selectedStoryId: string = '';
-  export let selectedCharacterIds: Set<string> = new Set();
+  export let selectedCharacterIds: Set<number> = new Set();
   export let collapsed: boolean = false;
 
-  const dispatch = createEventDispatcher();
-
-  function toggleCharacter(id: string) {
-    dispatch('toggleCharacter', id);
-  }
+  // Callback props instead of createEventDispatcher
+  export let onToggleCollapse: (collapsed: boolean) => void = () => {};
+  export let onSelectStory: (id: string) => void = () => {};
+  export let onCreateStory: () => void = () => {};
+  export let onEditStory: (story: StoryPremise) => void = () => {};
+  export let onDeleteStory: (id: string) => void = () => {};
+  export let onToggleCharacter: (id: number) => void = () => {};
+  export let onCreateCharacter: () => void = () => {};
+  export let onEditCharacter: (char: CharacterProfile) => void = () => {};
+  export let onDeleteCharacter: (id: number) => void = () => {};
 
   function toggleCollapse() {
     collapsed = !collapsed;
-    dispatch('toggleCollapse', collapsed);
+    onToggleCollapse(collapsed);
   }
 </script>
 
@@ -31,7 +36,7 @@
       <div class="config-section">
           <div class="section-header">
               <h2>Story Setting</h2>
-              <button class="create-btn" on:click={() => dispatch('createStory')}>+ Create Story</button>
+              <button class="create-btn" on:click={onCreateStory}>+ Create Story</button>
           </div>
           
           <div class="story-list">
@@ -42,7 +47,7 @@
                           name="storyGroup" 
                           value={story.id} 
                           checked={selectedStoryId === story.id}
-                          on:change={() => dispatch('selectStory', story.id)}
+                          on:change={() => onSelectStory(story.id)}
                       />
                       <div class="radio-content">
                           <span class="radio-title">{story.title}</span>
@@ -50,8 +55,8 @@
                       </div>
                       {#if story.id !== '1'}
                           <div class="story-controls">
-                              <button class="edit-btn" on:click|preventDefault={() => dispatch('editStory', story)}>✎</button>
-                              <button class="delete-btn" on:click|preventDefault={() => dispatch('deleteStory', story.id)}>🗑️</button>
+                              <button class="edit-btn" on:click|preventDefault={() => onEditStory(story)}>✎</button>
+                              <button class="delete-btn" on:click|preventDefault={() => onDeleteStory(story.id)}>🗑️</button>
                           </div>
                       {/if}
                   </label>
@@ -62,7 +67,7 @@
       <div class="config-section">
           <div class="section-header">
               <h2>Characters</h2>
-              <button class="create-btn" on:click={() => dispatch('createCharacter')}>+ Create</button>
+              <button class="create-btn" on:click={onCreateCharacter}>+ Create</button>
           </div>
           
           {#if characters.length === 0}
@@ -75,7 +80,7 @@
                               <input 
                                   type="checkbox" 
                                   checked={selectedCharacterIds.has(char.id)}
-                                  on:change={() => toggleCharacter(char.id)}
+                                  on:change={() => onToggleCharacter(char.id)}
                               />
                               <div class="char-info">
                                   <span class="char-name">{char.name}</span>
@@ -83,8 +88,8 @@
                               </div>
                           </label>
                           <div class="char-controls">
-                              <button class="edit-icon" on:click={() => dispatch('editCharacter', char)}>✎</button>
-                              <button class="delete-icon" on:click={() => dispatch('deleteCharacter', char.id)}>🗑️</button>
+                              <button class="edit-icon" on:click={() => onEditCharacter(char)}>✎</button>
+                              <button class="delete-icon" on:click={() => onDeleteCharacter(char.id)}>🗑️</button>
                           </div>
                       </div>
                   {/each}
