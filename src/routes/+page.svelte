@@ -146,13 +146,15 @@
   }
 
   async function sendMessage(e: CustomEvent<string>) {
-    const text = e.detail;
-    const isNew = messages.length === 0;
-    isLoading = true;
-    messages = [...messages, { id: Date.now(), text, sender: 'user' }];
-
-    try {
-      const storyId = selectedStoryId && selectedStoryId !== '1'
+      const text = e.detail;
+      const isNew = messages.length === 0;
+      isLoading = true;
+      messages = [...messages, { id: Date.now(), text, sender: 'user' }];
+  
+      console.log('[DEBUG] Calling processStoryTurn with chatId:', currentChatId, 'text:', text); // ADD THIS
+  
+      try {
+        const storyId = selectedStoryId && selectedStoryId !== '1'
         ? parseInt(selectedStoryId, 10)
         : undefined;
 
@@ -193,7 +195,12 @@
       };
 
       if (result.generated_image_path) {
-        newMsg.image = result.generated_image_path;
+        try {
+          const base64 = await invoke<string>('read_file_base64', { path: result.generated_image_path });
+          newMsg.image = `data:image/png;base64,${base64}`;
+        } catch (e) {
+          console.warn('[Orchestrator] Failed to load image:', e);
+        }
       }
 
       messages = [...messages, newMsg];
@@ -206,9 +213,10 @@
       }
 
       if (isNew) await fetchChatList();
-    } catch (err) {
-      messages = [...messages, { id: Date.now(), text: `Error: ${err}`, sender: 'ai' }];
-    } finally {
+      } catch (err) {
+          console.error('[DEBUG] processStoryTurn error:', JSON.stringify(err));
+          messages = [...messages, { id: Date.now(), text: `Error: ${err}`, sender: 'ai' }];
+      } finally {
       isLoading = false;
     }
   }

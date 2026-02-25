@@ -75,13 +75,9 @@
       generatingImages = generatingImages;
   
       try {
-          // Use ComfyUI scene generation instead of SD WebUI
           const result = await invoke<{
-              images_base64: string[];
               image_paths: string[];
-              prompt_used: string;
-              seed: number;
-              prompt_id: string;
+              images_base64: string[];
           }>('generate_master_portrait', {
               request: {
                   name: 'scene',
@@ -91,11 +87,16 @@
               }
           });
   
-          const base64 = result.images_base64[0];
+          // Read the file as base64 so we can display it
+          const path = result.image_paths[0];
+          const base64 = await invoke<string>('read_file_base64', { path });
+          console.log('[DEBUG] base64 prefix:', base64.substring(0, 30));
   
+          const raw = base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`;
+          
           const msgIdx = messages.findIndex(m => m.id === msg.id);
           if (msgIdx !== -1) {
-              messages[msgIdx].image = base64;
+              messages[msgIdx].image = raw;
               messages = messages;
           }
       } catch (e) {
@@ -106,6 +107,7 @@
           generatingImages = generatingImages;
       }
   }
+  
 </script>
 
 <div class="chat-main">
@@ -168,7 +170,7 @@
               {#if msg.image}
                 <div class="img-container">
                     <img 
-                        src="data:image/png;base64,{msg.image}" 
+                        src="{msg.image}"
                         alt="Generated Scene" 
                         class:dimmed={generatingImages.has(msg.id)}
                     />
