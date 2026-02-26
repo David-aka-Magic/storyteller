@@ -250,15 +250,59 @@
   }
 
   async function fetchCharacterList() {
-      try { characters = await invoke('get_character_list'); } catch (e) { console.error(e); }
-  }
+      try {
+        const storyId = selectedStoryId && selectedStoryId !== '1'
+          ? parseInt(selectedStoryId, 10)
+          : null;
+        characters = await invoke('list_characters_for_story', { storyId });
+      } catch (e) { console.error(e); }
+    }
 
   // CharacterModal saves directly to backend and returns the form with real ID.
   // Parent just refreshes the list.
-  async function handleSaveCharacter(_character: CharacterProfile) {
-      await fetchCharacterList();
-      showCharModal = false;
+  async function handleSaveCharacter(form: CharacterProfile) {
+      try {
+          // Attach the current story_id if one is selected
+          const storyId = selectedStoryId && selectedStoryId !== '1'
+              ? parseInt(selectedStoryId, 10)
+              : undefined;
+  
+          const characterToSave = {
+              ...form,
+              story_id: storyId ?? form.story_id,
+          };
+  
+          if (form.id && form.id > 0) {
+              await invoke('update_character', { character: characterToSave });
+          } else {
+              const newId = await invoke<number>('add_character', { character: { ...characterToSave, id: 0 } });
+              
+              // If we have an active story, link them
+              if (storyId && newId) {
+                  await invoke('link_character_to_story', { 
+                      characterId: newId, 
+                      storyId: storyId 
+                  });
+              }
+          }
+  
+          showCharModal = false;
+          await fetchCharacterList();
+      } catch (e) {
+          console.error('Failed to save character:', e);
+      }
   }
+  
+  async function handleLinkToStory(characterId: number) {
+      if (!selectedStoryId || selectedStoryId === '1') return;
+      try {
+        await invoke('link_character_to_story', {
+          characterId,
+          storyId: parseInt(selectedStoryId, 10),
+        });
+        await fetchCharacterList();
+      } catch (e) { console.error('[LinkToStory] Failed:', e); }
+    }
   
   async function deleteCharacter(id: number) {
     try {
@@ -342,6 +386,7 @@
     
     <ChatArea 
       {messages} {isLoading} {currentChatId}
+      storyId={selectedStoryId && selectedStoryId !== '1' ? parseInt(selectedStoryId) : null}
       activeCharacterId={(() => { const first = Array.from(selectedCharacterIds)[0]; return first != null ? String(first) : null; })()}
       on:sendMessage={sendMessage}
       on:clearChat={clearChat}
@@ -354,7 +399,10 @@
         {selectedCharacterIds}
         collapsed={configPanelCollapsed}
         onToggleCollapse={(val) => configPanelCollapsed = val}
-        onSelectStory={(id) => selectedStoryId = id}
+        onSelectStory={(id) => { 
+            selectedStoryId = id; 
+            fetchCharacterList();
+        }}
         onToggleCharacter={(id) => toggleCharacterSelection(id)}
         onCreateStory={() => { storyToEdit = null; showStoryModal = true; }}
         onEditStory={(story) => { storyToEdit = story; showStoryModal = true; }}
@@ -362,6 +410,11 @@
         onCreateCharacter={() => { characterToEdit = null; showCharModal = true; }}
         onEditCharacter={(char) => { characterToEdit = char; showCharModal = true; }}
         onDeleteCharacter={(id) => deleteCharacter(id)}
+        onLinkToStory={async (charId) => {
+                const storyId = parseInt(selectedStoryId, 10);
+                await invoke('link_character_to_story', { characterId: charId, storyId });
+                await fetchCharacterList();
+            }}
     />
 
     {#if contextMenu.show}
@@ -378,10 +431,11 @@
       />
     {/if}
 
-    <CharacterModal 
-        show={showCharModal} character={characterToEdit}
+    <CharacterModal
+        show={showCharModal}
+        character={characterToEdit}
+        onsave={handleSaveCharacter}
         onclose={() => showCharModal = false}
-        onsave={(form) => handleSaveCharacter(form)}
     />
     
     <StoryModal 

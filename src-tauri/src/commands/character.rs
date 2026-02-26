@@ -434,3 +434,21 @@ pub async fn search_characters(
 
     Ok(characters)
 }
+
+#[tauri::command]
+pub async fn link_character_to_story(
+    character_id: i64,
+    story_id: i64,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE characters SET story_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    )
+    .bind(story_id)
+    .bind(character_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("Failed to link character to story: {}", e))?;
+
+    Ok(())
+}

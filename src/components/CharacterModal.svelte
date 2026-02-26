@@ -232,39 +232,50 @@
   }
 
   // ── Save: persist character + optionally save master image ──
-  async function save() {
-    if (!form.sd_prompt) generateSdPrompt();
-
-    // Save to backend first to get/confirm the ID
-    try {
-      const returnedId = await invoke<number>('save_character', { character: form });
-      // Update form.id with the real DB id (important for new characters where id was 0)
-      form.id = returnedId;
-    } catch (e) {
-      generationError = `Failed to save character: ${e}`;
-      console.error('[CharacterModal] Save failed:', e);
-      return;
-    }
-
-    // If user selected a ComfyUI image, try to save as master reference
-    if (selectedIndex >= 0 && generatedPaths.length > 0 && form.id > 0) {
+  // ── Save: persist character + optionally save master image ──
+    async function save() {
+      if (!form.sd_prompt) generateSdPrompt();
+  
       try {
-        await invoke<string>('save_master_portrait', {
-          request: {
-            character_id: form.id,
-            selected_index: selectedIndex,
-            image_paths: generatedPaths,
-            character_name: form.name,
-          },
-        });
+        let characterId: number;
+  
+        if (form.id && form.id > 0) {
+          // Existing character — update in place
+          await invoke('update_character', { character: form });
+          characterId = form.id;
+        } else {
+          // New character — insert and get real ID back
+          characterId = await invoke<number>('add_character', {
+            character: { ...form, id: 0 }
+          });
+          form.id = characterId;
+        }
+  
+        // If user selected a ComfyUI image, save it as the master reference
+        if (selectedIndex >= 0 && generatedPaths.length > 0 && characterId > 0) {
+          try {
+            const masterPath = await invoke<string>('save_master_portrait', {
+              request: {
+                character_id: characterId,
+                selected_index: selectedIndex,
+                image_paths: generatedPaths,
+                character_name: form.name,
+              },
+            });
+            form.master_image_path = masterPath;
+            console.log('[CharacterModal] Master portrait saved:', masterPath);
+          } catch (e) {
+            console.warn('[CharacterModal] Could not save master image:', e);
+            // Non-fatal — character is saved, just without master reference
+          }
+        }
+  
+        onsave?.(form);
       } catch (e) {
-        console.warn('[CharacterModal] Could not save master image:', e);
-        // Non-fatal — character already saved with inline base64 image
+        generationError = `Failed to save character: ${e}`;
+        console.error('[CharacterModal] Save failed:', e);
       }
     }
-
-    onsave?.(form);
-  }
 
   function close() {
     onclose?.();

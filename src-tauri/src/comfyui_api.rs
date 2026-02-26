@@ -622,11 +622,20 @@ fn build_workflow_modifications(
     mods.insert("2".to_string(), positive_inputs);
 
     // --- Negative prompt ---
-    if let Some(neg) = &request.negative_prompt {
-        let mut neg_inputs = HashMap::new();
-        neg_inputs.insert("text".to_string(), Value::String(neg.clone()));
-        mods.insert("3".to_string(), neg_inputs);
-    }
+    let neg_text = request.negative_prompt.as_deref().unwrap_or(
+        "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+         (missing fingers:1.3), (extra fingers:1.3), (too many fingers:1.4), \
+         (fused fingers:1.3), (poorly drawn hands:1.4), (floating limbs:1.3), \
+         (disconnected limbs:1.3), (extra limbs:1.3), (missing arms:1.2), \
+         (extra arms:1.2), (deformed:1.3), (mutated:1.2), (disfigured:1.2), \
+         (malformed:1.2), blurry, lowres, watermark, text, signature, cropped, \
+         out of frame, ugly, duplicate, cloned face, poorly drawn face, \
+         (floating head:1.4), (detached head:1.4), (severed head:1.3), \
+         bad proportions, gross proportions, long neck, (mutation:1.2)"
+    );
+    let mut neg_inputs = HashMap::new();
+    neg_inputs.insert("text".to_string(), Value::String(neg_text.to_string()));
+    mods.insert("3".to_string(), neg_inputs);
 
     // --- Empty latent dimensions ---
     if request.width.is_some() || request.height.is_some() {

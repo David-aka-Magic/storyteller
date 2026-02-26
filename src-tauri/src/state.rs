@@ -31,7 +31,7 @@ impl OllamaState {
         let db_url = format!("sqlite:{}?mode=rwc", db_path.to_str().unwrap());
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(1)
             .connect(&db_url)
             .await
             .expect("Failed to connect to SQLite");
@@ -50,12 +50,24 @@ impl OllamaState {
     }
 
     async fn setup_database(pool: &SqlitePool) {
+        // WAL mode allows concurrent reads without blocking writes
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(pool)
+            .await
+            .ok();
+    
+        // Reduce lock timeout contention
+        sqlx::query("PRAGMA busy_timeout=5000")
+            .execute(pool)
+            .await
+            .ok();
+    
         // Enable foreign keys
         sqlx::query("PRAGMA foreign_keys = ON")
             .execute(pool)
             .await
             .ok();
-
+    
         // Chats table
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS chats (

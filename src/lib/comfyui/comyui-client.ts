@@ -93,10 +93,15 @@ function buildWorkflowPrompt(request: SceneGenRequest, maskFilenames: string[]):
   const height = request.height || CANVAS_HEIGHT;
   const seed = request.seed ?? Math.floor(Math.random() * 2 ** 53);
 
-  const negativePrompt = request.negativePrompt || 
-    '(worst quality, low quality:1.4), blurry, deformed, disfigured, bad anatomy, bad hands, ' +
-    'missing fingers, extra digits, cropped, watermark, text, signature, ugly, poorly drawn face, ' +
-    'mutation, extra limbs, blank eyes, dead eyes, crossed eyes, white eyes, weird teeth, distorted teeth';
+  const negativePrompt = request.negativePrompt ||
+    '(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), ' +
+    '(missing fingers:1.3), (extra fingers:1.3), (too many fingers:1.4), ' +
+    '(fused fingers:1.3), (poorly drawn hands:1.4), (floating limbs:1.3), ' +
+    '(disconnected limbs:1.3), (extra limbs:1.3), (missing arms:1.2), ' +
+    '(extra arms:1.2), (deformed:1.3), (mutated:1.2), (disfigured:1.2), ' +
+    'blurry, lowres, watermark, text, signature, cropped, out of frame, ' +
+    'ugly, duplicate, cloned face, poorly drawn face, ' +
+    '(floating head:1.4), (detached head:1.4), bad proportions, long neck';
 
   const prompt: ComfyUIPrompt = {};
 

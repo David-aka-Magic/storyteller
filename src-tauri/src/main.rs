@@ -176,12 +176,24 @@ fn main() {
             comfyui_api::generate_comfyui_scene,
             comfyui_api::read_file_bytes,
             comfyui_api::read_file_base64,
+            // Character commands
+            commands::character::add_character,
+            commands::character::update_character,
+            commands::character::delete_character_by_id,
+            commands::character::get_character_by_name,
+            commands::character::get_character_by_id,
+            commands::character::list_characters_for_story,
+            commands::character::search_characters,
+            commands::character::set_character_master_image,
+            commands::character::lookup_scene_characters,
+            commands::character::link_character_to_story,
             // Master Portrait commands
             commands::master_portrait::generate_master_portrait,
             commands::master_portrait::save_master_portrait,
             commands::master_portrait::preview_portrait_prompt,
             // Orchestrator (unified story turn pipeline)
             commands::orchestrator::process_story_turn,
+            commands::orchestrator::generate_scene_image_for_turn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

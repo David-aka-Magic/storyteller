@@ -266,13 +266,14 @@ pub fn build_portrait_prompt(request: &MasterPortraitRequest) -> String {
 
 /// Build a comprehensive negative prompt for portrait generation.
 fn build_negative_prompt(art_style: Option<&str>) -> String {
-    let base = "bad anatomy, bad hands, missing fingers, extra fingers, \
-                blurry, low quality, deformed, mutated, watermark, text, \
-                signature, cropped, out of frame, worst quality, low resolution, \
-                ugly, duplicate, extra limbs, gross proportions, malformed, \
-                poorly drawn face, poorly drawn hands, long neck, extra heads, \
-                bad proportions, cloned face, disfigured, fused fingers, \
-                too many fingers, unclear eyes, cross-eyed";
+    let base = "(bad anatomy:1.3), (bad hands:1.4), (missing fingers:1.3), \
+                (extra fingers:1.3), (too many fingers:1.4), (fused fingers:1.3), \
+                (poorly drawn hands:1.4), (floating limbs:1.3), (disconnected limbs:1.3), \
+                (extra limbs:1.3), (deformed:1.3), (mutated:1.2), (disfigured:1.2), \
+                (floating head:1.4), (detached head:1.4), (severed head:1.3), \
+                blurry, lowres, (worst quality:1.4), (low quality:1.4), \
+                watermark, text, signature, cropped, out of frame, ugly, duplicate, \
+                cloned face, poorly drawn face, bad proportions, long neck";
 
     let style_neg = match art_style {
         Some("Anime") => ", photorealistic, 3d, realistic",

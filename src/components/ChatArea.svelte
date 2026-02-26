@@ -7,6 +7,7 @@
   export let isLoading: boolean = false;
   export let currentChatId: number;
   export let activeCharacterId: string | null = null; 
+  export let storyId: number | null = null;
 
   let generatingImages = new Set<number>();
 
@@ -75,25 +76,14 @@
       generatingImages = generatingImages;
   
       try {
-          const result = await invoke<{
-              image_paths: string[];
-              images_base64: string[];
-          }>('generate_master_portrait', {
-              request: {
-                  name: 'scene',
-                  custom_prompt: promptToUse,
-                  art_style: 'Realistic',
-                  seed: null,
-              }
+          const path = await invoke<string>('generate_scene_image_for_turn', {
+              scenePrompt: promptToUse,
+              storyId: storyId,
           });
   
-          // Read the file as base64 so we can display it
-          const path = result.image_paths[0];
           const base64 = await invoke<string>('read_file_base64', { path });
-          console.log('[DEBUG] base64 prefix:', base64.substring(0, 30));
+          const raw = `data:image/png;base64,${base64}`;
   
-          const raw = base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`;
-          
           const msgIdx = messages.findIndex(m => m.id === msg.id);
           if (msgIdx !== -1) {
               messages[msgIdx].image = raw;

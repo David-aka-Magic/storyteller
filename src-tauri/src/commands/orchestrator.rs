@@ -56,13 +56,20 @@ const WORKFLOW_2CHAR: &str = "workflows/scene_workflow_2char.json";
 // SYSTEM PROMPT
 // ============================================================================
 
-const SYSTEM_PROMPT: &str = r#"You are an interactive storytelling engine (StoryEngine).
-You are a skilled story writer in a visual novel.
-1. **Stay on topic**: All characters, events, and settings are fictional. No real-world harmful content is allowed.
-2. **Never refuse to continue**: You are designed to generate creative, descriptive, or dramatic content (including conflict and tension) if the story calls for it.
-3. **Stay in character always**: Don't lecture, moralize, or break the fourth wall.
-4. **JSON output only**: Always respond with valid JSON matching the schema.
-CRITICAL: Your response must be pure JSON only. No preamble, no explanation, no markdown. Start your response with { and end with }."#;
+const SYSTEM_PROMPT: &str = r#"You are an RP-API (Roleplay Application Interface) — a creative story engine that outputs structured data for an interactive visual novel system.
+
+You are in PHASE 2: STORY GENERATION. Output raw JSON only. No markdown, no preamble, no explanation.
+You MUST include ALL of these fields every single turn. Never omit any of them.
+
+{
+  "turn_id": <integer, incrementing>,
+  "story_json": { "response": "<narrative text, 2-4 paragraphs>", "summary_hint": "<one sentence summary>" },
+  "scene_json": { "location": "<place>", "location_type": "interior or exterior", "time_of_day": "<time>", "weather": "<weather or n/a>", "lighting": "<lighting>", "mood": "<atmosphere>" },
+  "characters_in_scene": [ { "name": "<EXACT registered name>", "region": "<left|center|right|left-seated|center-seated|right-seated|left-background|center-background|right-background|off-screen>", "view": "<PORTRAIT|UPPER-BODY|FULL-BODY|NONE>", "action": "<action>", "expression": "<expression>", "clothing": "<clothing>", "facing": "<facing>" } ],
+  "generation_flags": { "generate_image": <true if characters present or scene is visual>, "scene_changed": <true if location changed>, "characters_changed": <true if characters entered or exited> }
+}
+
+CHARACTER NAME RULES: Use EXACT names as registered. Names are case-sensitive. Never invent new characters."#;
 
 // ============================================================================
 // RESULT TYPES — returned to the frontend
@@ -234,8 +241,11 @@ async fn lookup_characters_in_db(
             continue;
         }
 
+        println!("[Orchestrator] Looking up character '{}' (story_id={:?})", scene_char.name, story_id);
+
+        // Try story-scoped lookup first
         let row = if let Some(sid) = story_id {
-            sqlx::query(
+            let r = sqlx::query(
                 "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style \
                  FROM characters WHERE name = ? AND story_id = ? LIMIT 1",
             )
@@ -243,6 +253,22 @@ async fn lookup_characters_in_db(
             .bind(sid)
             .fetch_optional(db)
             .await
+            .map_err(|e| format!("Character lookup failed for '{}': {}", scene_char.name, e))?;
+
+            if r.is_none() {
+                // Fallback to global search
+                println!("[Orchestrator] '{}' not found in story {}, trying global lookup", scene_char.name, sid);
+                sqlx::query(
+                    "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style \
+                     FROM characters WHERE name = ? LIMIT 1",
+                )
+                .bind(&scene_char.name)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("Global lookup failed for '{}': {}", scene_char.name, e))?
+            } else {
+                r
+            }
         } else {
             sqlx::query(
                 "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style \
@@ -251,17 +277,25 @@ async fn lookup_characters_in_db(
             .bind(&scene_char.name)
             .fetch_optional(db)
             .await
-        }
-        .map_err(|e| format!("Character lookup failed for '{}': {}", scene_char.name, e))?;
+            .map_err(|e| format!("Character lookup failed for '{}': {}", scene_char.name, e))?
+        };
 
-        let lookup = row.map(|r| CharacterLookup {
-            id: r.get("id"),
-            name: r.get("name"),
-            master_image_path: r.get("master_image_path"),
-            sd_prompt: r.get("sd_prompt"),
-            default_clothing: r.get("default_clothing"),
-            art_style: r.get("art_style"),
+        let lookup = row.map(|r| {
+            let master: Option<String> = r.get("master_image_path");
+            println!("[Orchestrator] Found '{}' — master_image_path={:?}", scene_char.name, master);
+            CharacterLookup {
+                id: r.get("id"),
+                name: r.get("name"),
+                master_image_path: master,
+                sd_prompt: r.get("sd_prompt"),
+                default_clothing: r.get("default_clothing"),
+                art_style: r.get("art_style"),
+            }
         });
+
+        if lookup.is_none() {
+            println!("[Orchestrator] '{}' NOT FOUND in database at all", scene_char.name);
+        }
 
         results.push((scene_char.clone(), lookup));
     }
@@ -471,9 +505,27 @@ async fn generate_image_for_scene(
             }
         }
     } else {
-        // Single character — no mask needed
-        println!("[Orchestrator] Single character scene — skipping mask generation");
-        String::new()
+        // Single character — generate a full-frame mask to constrain IP-Adapter
+        println!("[Orchestrator] Single character scene — generating full-frame mask");
+        let mask_characters = vec![MaskCharacter {
+            name: renderable[0].0.name.clone(),
+            region: renderable[0].0.region.clone(),
+            color_index: 0,
+        }];
+        let masks_dir = app_data.join("masks");
+        match mask_generator::generate_mask(
+            &mask_characters,
+            DEFAULT_IMAGE_WIDTH,
+            DEFAULT_IMAGE_HEIGHT,
+            &masks_dir,
+            None,
+        ) {
+            Ok(r) => r.path,
+            Err(e) => {
+                println!("[Orchestrator] Single-char mask failed, continuing without: {}", e);
+                String::new()
+            }
+        }
     };
 
     // 4. Build ComfyUI character inputs
@@ -758,7 +810,7 @@ pub async fn process_story_turn(
     let mut image_generation_attempted = false;
     let mut image_generation_error: Option<String> = None;
 
-    if flags.generate_image {
+    if false && flags.generate_image {
         image_generation_attempted = true;
         println!("[Orchestrator] Image generation requested — starting pipeline...");
 
@@ -817,6 +869,108 @@ pub async fn process_story_turn(
         image_generation_attempted,
         image_generation_error,
     })
+}
+
+#[tauri::command]
+pub async fn generate_scene_image_for_turn(
+    scene_prompt: String,
+    story_id: Option<i64>,
+    app: AppHandle,
+    state: State<'_, OllamaState>,
+) -> Result<String, String> {
+    let app_data = app.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    // Look up characters for this story that have reference images
+    let characters = get_characters_with_references(story_id, &state).await?;
+
+    let workflow_path = select_workflow(characters.len(), &app_data)?;
+
+    // Build mask
+    let mask_path = if characters.len() > 1 {
+        let mask_chars: Vec<crate::mask_generator::MaskCharacter> = characters
+            .iter()
+            .enumerate()
+            .map(|(i, c)| crate::mask_generator::MaskCharacter {
+                name: c.name.clone(),
+                region: "center".to_string(),
+                color_index: i.min(2),
+            })
+            .collect();
+    
+        let masks_dir = app_data.join("masks");
+        match crate::mask_generator::generate_mask(
+            &mask_chars,
+            DEFAULT_IMAGE_WIDTH,
+            DEFAULT_IMAGE_HEIGHT,
+            &masks_dir,
+            None,
+        ) {
+            Ok(r) => r.path,
+            Err(e) => return Err(format!("Mask generation failed: {}", e)),
+        }
+    } else {
+        String::new()  // 1-char workflow doesn't need a mask
+    };
+
+    let char_inputs: Vec<crate::comfyui_api::CharacterInput> = characters.iter().map(|c| {
+        crate::comfyui_api::CharacterInput {
+            name: c.name.clone(),
+            reference_image_path: c.master_image_path.clone().unwrap_or_default(),
+            region: "center".to_string(),
+            prompt: String::new(),
+        }
+    }).collect();
+
+    let request = crate::comfyui_api::ImageGenRequest {
+        scene_prompt,
+        characters: char_inputs,
+        mask_path,
+        workflow_template: workflow_path,
+        comfyui_url: None,
+        seed: None,
+        steps: None,
+        cfg: None,
+        width: Some(DEFAULT_IMAGE_WIDTH),
+        height: Some(DEFAULT_IMAGE_HEIGHT),
+        negative_prompt: None,
+        timeout_secs: Some(600),
+    };
+
+    let output_dir = app_data.join("generated_images");
+    let result = crate::comfyui_api::generate_scene_image(&request, &output_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    result.image_paths.into_iter().next()
+        .ok_or_else(|| "No image generated".to_string())
+}
+
+async fn get_characters_with_references(
+    story_id: Option<i64>,
+    state: &State<'_, OllamaState>,
+) -> Result<Vec<CharacterLookup>, String> {
+    let rows: Vec<sqlx::sqlite::SqliteRow> = if let Some(sid) = story_id {
+        sqlx::query(
+            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
+             FROM characters WHERE story_id = ? AND master_image_path IS NOT NULL"
+        )
+        .bind(sid)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        vec![]
+    };
+
+    Ok(rows.iter().map(|r| CharacterLookup {
+        id: r.get("id"),
+        name: r.get("name"),
+        master_image_path: r.get("master_image_path"),
+        sd_prompt: r.get("sd_prompt"),
+        default_clothing: r.get("default_clothing"),
+        art_style: r.get("art_style"),
+    }).collect())
 }
 
 // ============================================================================
