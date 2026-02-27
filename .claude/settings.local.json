@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build --manifest-path src-tauri/Cargo.toml)"
+    ]
+  }
+}

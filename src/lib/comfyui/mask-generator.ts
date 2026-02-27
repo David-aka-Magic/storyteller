@@ -40,8 +40,8 @@ const REGION_PRESETS: Record<string, { x: number; y: number; w: number; h: numbe
 /**
  * Canvas dimensions matching the workflow's EmptyLatentImage
  */
-const CANVAS_WIDTH = 1152;
-const CANVAS_HEIGHT = 896;
+const CANVAS_WIDTH = 1024;
+const CANVAS_HEIGHT = 576;
 
 /**
  * Generate a mask image as a base64-encoded PNG.

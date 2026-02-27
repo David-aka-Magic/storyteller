@@ -17,7 +17,7 @@ import { generateSceneMasks, autoAssignRegions, CANVAS_WIDTH, CANVAS_HEIGHT } fr
 // CONFIGURATION
 // ============================================================================
 
-const COMFYUI_BASE_URL = 'http://127.0.0.1:8000';
+const COMFYUI_BASE_URL = 'http://127.0.0.1:8188';
 const COMFYUI_INPUT_DIR = 'C:\\Users\\dcarl\\Documents\\ComfyUI\\input';
 
 /**
@@ -34,13 +34,13 @@ const NODE_IDS = {
   clipVisionLoader: '11',
   insightfaceLoader: '12',
   // Character reference images
-  charRef: ['50', '51', '52'],
+  charRef: ['20', '21'],
   // Mask images
-  maskLoad: ['60', '61', '62'],
+  maskLoad: ['40', '41'],
   // ImageToMask converters
-  maskConvert: ['65', '66', '67'],
+  maskConvert: ['45', '46'],
   // FaceID nodes
-  faceId: ['30', '31', '32'],
+  faceId: ['30', '31'],
   // Sampling & output
   ksampler: '35',
   vaeDecode: '36',

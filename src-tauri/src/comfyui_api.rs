@@ -60,8 +60,9 @@ pub struct ImageGenRequest {
     pub scene_prompt: String,
     /// Characters to render with IP-Adapter FaceID.
     pub characters: Vec<CharacterInput>,
-    /// Path to the color mask PNG (from mask_generator).
-    pub mask_path: String,
+    /// Per-character mask PNGs. Empty for 1-char workflow.
+    /// For 2-char: vec of 2 paths, one per character.
+    pub mask_paths: Vec<String>,
     /// Path to the base workflow JSON template.
     pub workflow_template: String,
     /// Optional: override the ComfyUI base URL.
@@ -545,20 +546,22 @@ pub async fn generate_scene_image(
         println!("[ComfyUI] Uploaded reference for '{}': {}", character.name, upload_name);
     }
 
-    let mask_stored = if !request.mask_path.is_empty() {
-        let mask_path = Path::new(&request.mask_path);
-        let mask_name = upload_image_to_comfyui(base_url, mask_path, "scene_mask.png").await?;
-        println!("[ComfyUI] Uploaded mask: {}", mask_name);
-        Some(mask_name)
-    } else {
-        None
-    };
+    let mut uploaded_masks: Vec<String> = Vec::new();
+    for (i, mask_path_str) in request.mask_paths.iter().enumerate() {
+        if !mask_path_str.is_empty() {
+            let mask_path = Path::new(mask_path_str);
+            let mask_upload_name = format!("scene_mask_char{}.png", i);
+            let mask_name = upload_image_to_comfyui(base_url, mask_path, &mask_upload_name).await?;
+            println!("[ComfyUI] Uploaded mask {}: {}", i, mask_name);
+            uploaded_masks.push(mask_name);
+        }
+    }
 
     // 3. Load and modify workflow
     let template_path = Path::new(&request.workflow_template);
     let mut workflow = load_workflow_template(template_path)?;
 
-    let modifications = build_workflow_modifications(request, &uploaded_refs, &mask_stored);
+    let modifications = build_workflow_modifications(request, &uploaded_refs, &uploaded_masks);
     modify_workflow(&mut workflow, &modifications)?;
     println!("[ComfyUI] Workflow prepared with {} modifications", modifications.len());
 
@@ -604,15 +607,15 @@ pub async fn generate_scene_image(
 /// This creates a mapping of node_id → { input_key: value } that will
 /// be injected into the workflow JSON. Node IDs must match the template.
 ///
-/// This function uses the same node ID conventions as comfyui-client.ts:
+/// Node ID conventions (matching workflow JSON):
 ///   - "2" = positive prompt, "3" = negative prompt, "4" = empty latent
-///   - "50","51","52" = character reference image loaders
-///   - "60","61","62" = mask image loaders
+///   - "20","21" = character reference image loaders
+///   - "40","41" = per-character mask image loaders
 ///   - "35" = KSampler (seed, steps, cfg)
 fn build_workflow_modifications(
     request: &ImageGenRequest,
     uploaded_refs: &[String],
-    mask_filename: &Option<String>,
+    mask_filenames: &[String],
 ) -> HashMap<String, HashMap<String, Value>> {
     let mut mods: HashMap<String, HashMap<String, Value>> = HashMap::new();
 
@@ -637,7 +640,16 @@ fn build_workflow_modifications(
          (bad eyes:1.3), (poorly drawn eyes:1.3), (extra eyes:1.3), \
          (bad iris:1.3), (bad pupils:1.3), (distorted pupils:1.3), \
          (dead eyes:1.2), (empty eyes:1.2), \
-         (bad face:1.3), (asymmetric face:1.3), (distorted face:1.3)"
+         (bad face:1.3), (asymmetric face:1.3), (distorted face:1.3), \
+         (cross-eyed:1.4), (wall-eyed:1.3), (strabismus:1.4), \
+         (unfocused eyes:1.3), (different colored eyes:1.3), (heterochromia:1.2), \
+         (wonky eyes:1.3), (derpy eyes:1.3), \
+         close up, closeup, headshot, upper body only, face only, \
+         portrait crop, zoomed in, \
+         masculine features, strong jawline, cleft chin, square jaw, \
+         angular face, manly, \
+         standing when should be sitting, standing when should be lying down, \
+         stiff pose, t-pose, a-pose, mannequin pose"
     );
     let mut neg_inputs = HashMap::new();
     neg_inputs.insert("text".to_string(), Value::String(neg_text.to_string()));
@@ -686,14 +698,15 @@ fn build_workflow_modifications(
         mods.insert(ref_node_ids[i].to_string(), inputs);
     }
 
-    // --- Mask images (nodes 60, 61, 62) ---
-    if let Some(mask_name) = mask_filename {
-        let mask_node_ids = ["40", "41"];
-        for i in 0..request.characters.len().min(mask_node_ids.len()) {
-            let mut inputs = HashMap::new();
-            inputs.insert("image".to_string(), Value::String(mask_name.clone()));
-            mods.insert(mask_node_ids[i].to_string(), inputs);
+    // --- Per-character mask images (nodes 40, 41) ---
+    let mask_node_ids = ["40", "41"];
+    for (i, mask_name) in mask_filenames.iter().enumerate() {
+        if i >= mask_node_ids.len() {
+            break;
         }
+        let mut inputs = HashMap::new();
+        inputs.insert("image".to_string(), Value::String(mask_name.clone()));
+        mods.insert(mask_node_ids[i].to_string(), inputs);
     }
 
     mods
@@ -909,7 +922,7 @@ mod tests {
                 region: "left".to_string(),
                 prompt: "smiling".to_string(),
             }],
-            mask_path: "/path/to/mask.png".to_string(),
+            mask_paths: vec!["/path/to/mask.png".to_string()],
             workflow_template: "template.json".to_string(),
             comfyui_url: None,
             seed: Some(123),
@@ -922,9 +935,9 @@ mod tests {
         };
 
         let uploaded_refs = vec!["ref_alice_0.png".to_string()];
-        let mask_filename = Some("scene_mask.png".to_string());
+        let mask_filenames = vec!["scene_mask.png".to_string()];
 
-        let mods = build_workflow_modifications(&request, &uploaded_refs, &mask_filename);
+        let mods = build_workflow_modifications(&request, &uploaded_refs, &mask_filenames);
 
         // Positive prompt set
         assert_eq!(mods["2"]["text"], json!("test scene"));

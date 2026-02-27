@@ -304,8 +304,8 @@ pub async fn lookup_scene_characters(
         let row = if let Some(sid) = story_id {
             sqlx::query(
                 r#"
-                SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
-                FROM characters 
+                SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
+                FROM characters
                 WHERE name = ? AND story_id = ?
                 "#
             )
@@ -317,8 +317,8 @@ pub async fn lookup_scene_characters(
         } else {
             sqlx::query(
                 r#"
-                SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
-                FROM characters 
+                SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
+                FROM characters
                 WHERE name = ?
                 LIMIT 1
                 "#
@@ -336,6 +336,7 @@ pub async fn lookup_scene_characters(
             sd_prompt: r.get("sd_prompt"),
             default_clothing: r.get("default_clothing"),
             art_style: r.get("art_style"),
+            gender: r.get("gender"),
         });
         
         results.push((scene_char, lookup));

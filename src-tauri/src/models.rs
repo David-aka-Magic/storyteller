@@ -66,6 +66,7 @@ pub struct CharacterLookup {
     pub sd_prompt: Option<String>,
     pub default_clothing: Option<String>,
     pub art_style: Option<String>,
+    pub gender: Option<String>,
 }
 
 /// Scene character from LLM output (matches your Ollama model's JSON)

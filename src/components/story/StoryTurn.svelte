@@ -29,7 +29,7 @@
   /** Convert an absolute file path to a Tauri asset URL */
   function assetSrc(path: string): string {
     try {
-      return convertFileSrc(path);
+      return convertFileSrc(path) + '?t=' + Date.now();
     } catch {
       return path;
     }

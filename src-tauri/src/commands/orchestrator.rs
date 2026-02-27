@@ -43,8 +43,8 @@ const STORY_MODEL: &str = "Story_v27";
 const NUM_CTX: u32 = 8192;
 
 /// Default image dimensions for scene generation.
-const DEFAULT_IMAGE_WIDTH: u32 = 1024;
-const DEFAULT_IMAGE_HEIGHT: u32 = 576;
+const DEFAULT_IMAGE_WIDTH: u32 = 1152;
+const DEFAULT_IMAGE_HEIGHT: u32 = 768;
 
 /// Workflow filenames (relative to app data dir's "workflows" folder).
 /// Single character: uses IPAdapter FaceID without masks.
@@ -247,7 +247,7 @@ async fn lookup_characters_in_db(
         // Try story-scoped lookup first
         let row = if let Some(sid) = story_id {
             let r = sqlx::query(
-                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style \
+                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender \
                  FROM characters WHERE name = ? AND story_id = ? LIMIT 1",
             )
             .bind(&scene_char.name)
@@ -272,7 +272,7 @@ async fn lookup_characters_in_db(
             }
         } else {
             sqlx::query(
-                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style \
+                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender \
                  FROM characters WHERE name = ? LIMIT 1",
             )
             .bind(&scene_char.name)
@@ -291,6 +291,7 @@ async fn lookup_characters_in_db(
                 sd_prompt: r.get("sd_prompt"),
                 default_clothing: r.get("default_clothing"),
                 art_style: r.get("art_style"),
+                gender: r.get("gender"),
             }
         });
 
@@ -475,59 +476,38 @@ async fn generate_image_for_scene(
         Err(e) => return (None, Some(e)),
     };
 
-    // 3. Generate color mask (only needed for multi-character scenes)
-    let mask_path = if num_chars > 1 {
-        let mask_characters: Vec<MaskCharacter> = renderable
-            .iter()
-            .enumerate()
-            .map(|(i, (cis, _))| MaskCharacter {
+    // 3. Generate per-character masks (only needed for multi-character scenes)
+    let mask_paths: Vec<String> = if num_chars > 1 {
+        let masks_dir = app_data.join("masks");
+        let mut paths = Vec::new();
+
+        for (i, (cis, _)) in renderable.iter().enumerate().take(2) {
+            let mask_chars = vec![MaskCharacter {
                 name: cis.name.clone(),
                 region: cis.region.clone(),
-                color_index: i.min(2),
-            })
-            .collect();
+                color_index: 0, // Always 0 — each mask has one char, red channel
+            }];
 
-        let masks_dir = app_data.join("masks");
-        match mask_generator::generate_mask(
-            &mask_characters,
-            DEFAULT_IMAGE_WIDTH,
-            DEFAULT_IMAGE_HEIGHT,
-            &masks_dir,
-            None,
-        ) {
-            Ok(r) => {
-                println!(
-                    "[Orchestrator] Mask generated: {} ({} regions)",
-                    r.path, r.regions_drawn
-                );
-                r.path
-            }
-            Err(e) => {
-                return (None, Some(format!("Mask generation failed: {}", e)));
+            let filename = format!("scene_mask_char{}.png", i);
+            match mask_generator::generate_mask(
+                &mask_chars,
+                DEFAULT_IMAGE_WIDTH,
+                DEFAULT_IMAGE_HEIGHT,
+                &masks_dir,
+                Some(&filename),
+            ) {
+                Ok(r) => {
+                    println!("[Orchestrator] Mask for '{}': {} (region={})", cis.name, r.path, cis.region);
+                    paths.push(r.path);
+                }
+                Err(e) => {
+                    return (None, Some(format!("Mask gen failed for '{}': {}", cis.name, e)));
+                }
             }
         }
+        paths
     } else {
-        // Single character — generate a full-frame mask to constrain IP-Adapter
-        println!("[Orchestrator] Single character scene — generating full-frame mask");
-        let mask_characters = vec![MaskCharacter {
-            name: renderable[0].0.name.clone(),
-            region: renderable[0].0.region.clone(),
-            color_index: 0,
-        }];
-        let masks_dir = app_data.join("masks");
-        match mask_generator::generate_mask(
-            &mask_characters,
-            DEFAULT_IMAGE_WIDTH,
-            DEFAULT_IMAGE_HEIGHT,
-            &masks_dir,
-            None,
-        ) {
-            Ok(r) => r.path,
-            Err(e) => {
-                println!("[Orchestrator] Single-char mask failed, continuing without: {}", e);
-                String::new()
-            }
-        }
+        vec![] // 1-char doesn't need masks
     };
 
     // 4. Build ComfyUI character inputs
@@ -588,7 +568,7 @@ async fn generate_image_for_scene(
     let request = ImageGenRequest {
         scene_prompt,
         characters: comfy_characters,
-        mask_path,
+        mask_paths,
         workflow_template,
         comfyui_url: None,
         seed: None,
@@ -841,33 +821,17 @@ pub async fn process_story_turn(
     // ── Step 5: Conditional image generation ──────────────────────────
 
     let flags = parsed.flags();
-    let mut generated_image_path: Option<String> = None;
-    let mut image_generation_attempted = false;
-    let mut image_generation_error: Option<String> = None;
+    let generated_image_path: Option<String> = None;
+    let image_generation_attempted = false;
+    let image_generation_error: Option<String> = None;
 
-    if false && flags.generate_image {
-        image_generation_attempted = true;
-        println!("[Orchestrator] Image generation requested — starting pipeline...");
-
-        let img_start = std::time::Instant::now();
-        let (path, error) =
-            generate_image_for_scene(&parsed, &characters_in_scene, &lookup_results, &app).await;
-
-        generated_image_path = path;
-        image_generation_error = error.clone();
-
-        if let Some(ref err) = error {
-            println!("[Orchestrator] Image generation error: {}", err);
-        }
-
-        println!(
-            "[Orchestrator] Image pipeline completed in {:.1}s (success={})",
-            img_start.elapsed().as_secs_f64(),
-            generated_image_path.is_some()
-        );
-    } else {
-        println!("[Orchestrator] No image generation requested for this turn");
-    }
+    // Image generation is user-initiated via the "Generate Image" button,
+    // which calls generate_scene_image_for_turn directly.
+    println!(
+        "[Orchestrator] Image generation available (generate_image={}, {} renderable chars)",
+        flags.generate_image,
+        characters_in_scene.iter().filter(|c| c.needs_render && c.has_reference_image).count()
+    );
 
     // ── Step 6: Save to database ──────────────────────────────────────
 
@@ -916,51 +880,199 @@ pub async fn generate_scene_image_for_turn(
     let app_data = app.path().app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
 
-    // Look up characters for this story that have reference images
     let characters = get_characters_with_references(story_id, &state).await?;
 
-    let workflow_path = select_workflow(characters.len(), &app_data)?;
+    if characters.is_empty() {
+        return Err("No characters with reference images found".to_string());
+    }
 
-    // Build mask
-    let mask_path = if characters.len() > 1 {
-        let mask_chars: Vec<crate::mask_generator::MaskCharacter> = characters
-            .iter()
-            .enumerate()
-            .map(|(i, c)| crate::mask_generator::MaskCharacter {
-                name: c.name.clone(),
-                region: "center".to_string(),
-                color_index: i.min(2),
-            })
-            .collect();
-    
-        let masks_dir = app_data.join("masks");
-        match crate::mask_generator::generate_mask(
-            &mask_chars,
-            DEFAULT_IMAGE_WIDTH,
-            DEFAULT_IMAGE_HEIGHT,
-            &masks_dir,
-            None,
-        ) {
-            Ok(r) => r.path,
-            Err(e) => return Err(format!("Mask generation failed: {}", e)),
-        }
-    } else {
-        String::new()  // 1-char workflow doesn't need a mask
+    let num_chars = characters.len().min(2); // Max 2 for current workflows
+    let workflow_path = select_workflow(num_chars, &app_data)?;
+
+    // Assign regions up-front — used by both mask generation and char_inputs
+    let regions: Vec<String> = match num_chars {
+        1 => vec!["center".to_string()],
+        _ => vec!["left".to_string(), "right".to_string()],
     };
 
-    let char_inputs: Vec<crate::comfyui_api::CharacterInput> = characters.iter().map(|c| {
-        crate::comfyui_api::CharacterInput {
+    // ═══════════════════════════════════════════════════════════════════
+    // CRITICAL: Enrich the scene prompt with character descriptions.
+    // IP-Adapter FaceID only applies a face to a person that already
+    // exists in the image. If the prompt doesn't describe a person,
+    // the model won't generate one, and the face reference is wasted.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // Determine Danbooru-style subject count tags from character genders.
+    // These help SDXL place exactly the right number of people.
+    let genders: Vec<&'static str> = characters.iter()
+        .take(num_chars)
+        .map(infer_gender)
+        .collect();
+
+    let subject_count_tag = match num_chars {
+        1 => match genders[0] {
+            "female" => "1girl",
+            "male"   => "1boy",
+            _        => "1person",
+        },
+        2 => match (genders[0], genders[1]) {
+            ("female", "female")                   => "2girls",
+            ("male",   "male")                     => "2boys",
+            ("female", "male") | ("male", "female") => "1girl 1boy",
+            ("female", _) | (_, "female")          => "1girl 1person",
+            ("male",   _) | (_, "male")            => "1boy 1person",
+            _                                      => "2people",
+        },
+        _ => "people",
+    };
+
+    // Extract pose/action from the scene prompt to place at the front of the
+    // enriched prompt.  SDXL weights early tokens most heavily, so the pose
+    // emphasis overrides the model's default "standing facing camera" pose.
+    let pose_emphasis = extract_pose_emphasis(&scene_prompt);
+
+    println!("[Orchestrator] Subject count tag: {}", subject_count_tag);
+    if !pose_emphasis.is_empty() {
+        println!("[Orchestrator] Pose emphasis: {}", pose_emphasis);
+    }
+
+    // Build per-character description segments (collected, not appended inline).
+    let mut char_segments: Vec<String> = Vec::new();
+    for (i, character) in characters.iter().enumerate().take(num_chars) {
+        let region = regions.get(i).map(|s| s.as_str()).unwrap_or("center");
+
+        let mut char_parts: Vec<String> = Vec::new();
+        if let Some(ref sd) = character.sd_prompt {
+            if !sd.is_empty() {
+                // Strip portrait-specific tags that fight scene composition.
+                // Keep physical descriptors (age, hair, skin, body type).
+                let scene_safe: String = sd
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| {
+                        let lower = s.to_lowercase();
+                        !lower.contains("solo")
+                            && !lower.contains("portrait")
+                            && !lower.contains("looking at viewer")
+                            && !lower.contains("looking at camera")
+                            && !lower.contains("neutral")
+                            && !lower.contains("background")
+                            && !lower.contains("masterpiece")
+                            && !lower.contains("best quality")
+                            && !lower.contains("detailed face")
+                            && !lower.contains("detailed eyes")
+                            && !lower.contains("1girl")
+                            && !lower.contains("1boy")
+                            && !lower.contains("1woman")
+                            && !lower.contains("1man")
+                            && !lower.contains("upper body")
+                            && !lower.contains("close up")
+                            && !lower.contains("closeup")
+                            && !lower.contains("headshot")
+                    })
+                    .collect::<Vec<&str>>()
+                    .join(", ");
+                if !scene_safe.is_empty() {
+                    char_parts.push(scene_safe);
+                }
+            }
+        }
+        if let Some(ref clothing) = character.default_clothing {
+            if !clothing.is_empty() {
+                char_parts.push(clothing.clone());
+            }
+        }
+
+        // Soften feminine features — InsightFace embeddings can skew masculine
+        if infer_gender(character) == "female" {
+            char_parts.push("soft feminine features, smooth jawline, delicate face, no cleft chin".to_string());
+        }
+
+        let char_desc = if char_parts.is_empty() {
+            "a person".to_string()
+        } else {
+            char_parts.join(", ")
+        };
+
+        let region_prefix = match region {
+            "left" => "full body shot of a person on the left,",
+            "right" => "full body shot of a person on the right,",
+            _ => "full body shot of a person standing in the scene,",
+        };
+        char_segments.push(format!("{} {}", region_prefix, char_desc));
+    }
+
+    // Assemble in SDXL priority order:
+    //   (quality tags), (POSE:weight), subject_count, scene_description,
+    //   character_descriptions, face_quality
+    // Pose goes first so it overrides the model's default standing pose.
+    let pose_prefix = if pose_emphasis.is_empty() {
+        String::new()
+    } else {
+        format!("{}, ", pose_emphasis)
+    };
+
+    let enriched_prompt = format!(
+        "(masterpiece, best quality, highly detailed, full body, wide angle, cinematic composition, environmental portrait), {}{}, {}, {}, detailed face, clear face, realistic face",
+        pose_prefix,
+        subject_count_tag,
+        scene_prompt,
+        char_segments.join(", ")
+    );
+
+    println!(
+        "[Orchestrator] Enriched scene prompt: {}",
+        &enriched_prompt[..enriched_prompt.len().min(200)]
+    );
+
+    // Generate per-character masks for 2-char workflow
+    let mask_paths: Vec<String> = if num_chars > 1 {
+        let masks_dir = app_data.join("masks");
+        let mut paths = Vec::new();
+
+        for (i, region) in regions.iter().enumerate().take(num_chars) {
+            let mask_chars = vec![crate::mask_generator::MaskCharacter {
+                name: characters.get(i).map(|c| c.name.clone()).unwrap_or_default(),
+                region: region.to_string(),
+                color_index: 0, // MUST be 0 (red) — ImageToMask reads red channel
+            }];
+
+            let filename = format!("scene_mask_char{}.png", i);
+            match crate::mask_generator::generate_mask(
+                &mask_chars,
+                DEFAULT_IMAGE_WIDTH,
+                DEFAULT_IMAGE_HEIGHT,
+                &masks_dir,
+                Some(&filename),
+            ) {
+                Ok(r) => {
+                    println!("[Orchestrator] Mask for char {}: {} (region={})", i, r.path, region);
+                    paths.push(r.path);
+                }
+                Err(e) => return Err(format!("Mask gen failed for char {}: {}", i, e)),
+            }
+        }
+        paths
+    } else {
+        vec![]
+    };
+
+    let char_inputs: Vec<crate::comfyui_api::CharacterInput> = characters
+        .iter()
+        .enumerate()
+        .take(num_chars)
+        .map(|(i, c)| crate::comfyui_api::CharacterInput {
             name: c.name.clone(),
             reference_image_path: c.master_image_path.clone().unwrap_or_default(),
-            region: "center".to_string(),
+            region: regions.get(i).cloned().unwrap_or_else(|| "center".to_string()),
             prompt: String::new(),
-        }
-    }).collect();
+        })
+        .collect();
 
     let request = crate::comfyui_api::ImageGenRequest {
-        scene_prompt,
+        scene_prompt: enriched_prompt,
         characters: char_inputs,
-        mask_path,
+        mask_paths,
         workflow_template: workflow_path,
         comfyui_url: None,
         seed: None,
@@ -981,6 +1093,85 @@ pub async fn generate_scene_image_for_turn(
         .ok_or_else(|| "No image generated".to_string())
 }
 
+/// Scans the scene prompt for action/pose keywords and returns an emphasized
+/// pose tag to place at the front of the enriched prompt.  SDXL weighs early
+/// tokens and `(tag:weight)` syntax most heavily, so putting the pose here
+/// overrides the model's default "standing facing camera" tendency.
+/// Returns an empty string when no recognizable pose is detected.
+fn extract_pose_emphasis(scene_prompt: &str) -> String {
+    let lower = scene_prompt.to_lowercase();
+
+    // Ordered from most-specific to least-specific so a driving scene doesn't
+    // accidentally match the generic "sitting" branch first.
+    let checks: &[(&[&str], &str)] = &[
+        (
+            &["lying", "lay", "nap", "sleep", "bed", "resting"],
+            "(person lying down in bed, resting, eyes closed:1.4)",
+        ),
+        (
+            &["driving", "truck", "car", "steering", "behind the wheel"],
+            "(person sitting in vehicle, driving:1.3)",
+        ),
+        (
+            &["riding", "horse", "horseback"],
+            "(person riding a horse:1.4)",
+        ),
+        (
+            &["sitting", "sat", "seat", "chair", "booth", "diner", "eating"],
+            "(person sitting down:1.3)",
+        ),
+        (
+            &["running", "ran", "sprint", "rushing"],
+            "(person running, dynamic motion:1.3)",
+        ),
+        (
+            &["kneeling", "crouching", "bending"],
+            "(person kneeling down:1.3)",
+        ),
+        (
+            &["cooking", "kitchen", "stove", "preparing"],
+            "(person cooking in kitchen, hands busy:1.3)",
+        ),
+        (
+            &["walking", "walked", "strolling", "heading"],
+            "(person walking, in motion:1.2)",
+        ),
+    ];
+
+    for (keywords, emphasis) in checks {
+        if keywords.iter().any(|kw| lower.contains(kw)) {
+            return emphasis.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Infer "female" / "male" / "unknown" from the character's DB gender field,
+/// falling back to keyword scanning of the sd_prompt if the field is absent.
+fn infer_gender(character: &CharacterLookup) -> &'static str {
+    // 1. Explicit DB gender field
+    if let Some(ref g) = character.gender {
+        let gl = g.to_lowercase();
+        if gl.contains("female") || gl.contains("woman") || gl.contains("girl") {
+            return "female";
+        }
+        if gl.contains("male") || gl.contains("man") || gl.contains("boy") {
+            return "male";
+        }
+    }
+    // 2. Keyword scan of sd_prompt as fallback
+    if let Some(ref sd) = character.sd_prompt {
+        let lower = sd.to_lowercase();
+        if lower.contains("1girl") || lower.contains("female") || lower.contains("woman") || lower.contains("girl") {
+            return "female";
+        }
+        if lower.contains("1boy") || lower.contains("male") || lower.contains("man") || lower.contains("boy") {
+            return "male";
+        }
+    }
+    "unknown"
+}
+
 async fn get_characters_with_references(
     story_id: Option<i64>,
     state: &State<'_, OllamaState>,
@@ -989,7 +1180,7 @@ async fn get_characters_with_references(
     // falling back to global if story_id is None or returns nothing.
     let rows: Vec<sqlx::sqlite::SqliteRow> = if let Some(sid) = story_id {
         let scoped = sqlx::query(
-            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
+            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
              FROM characters WHERE story_id = ? AND master_image_path IS NOT NULL"
         )
         .bind(sid)
@@ -1000,7 +1191,7 @@ async fn get_characters_with_references(
         if scoped.is_empty() {
             // Fall back to global if story scope returns nothing
             sqlx::query(
-                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
+                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
                  FROM characters WHERE master_image_path IS NOT NULL"
             )
             .fetch_all(&state.db)
@@ -1012,7 +1203,7 @@ async fn get_characters_with_references(
     } else {
         // No story_id — query all characters with reference images
         sqlx::query(
-            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
+            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
              FROM characters WHERE master_image_path IS NOT NULL"
         )
         .fetch_all(&state.db)
@@ -1027,6 +1218,7 @@ async fn get_characters_with_references(
         sd_prompt: r.get("sd_prompt"),
         default_clothing: r.get("default_clothing"),
         art_style: r.get("art_style"),
+        gender: r.get("gender"),
     }).collect())
 }
 
