@@ -90,6 +90,7 @@ pub struct CharacterInScene {
     pub db_id: Option<i64>,
     /// Whether this character has a master reference image for IP-Adapter.
     pub has_reference_image: bool,
+    pub prompt_only_description: Option<String>,
 }
 
 /// Serializable compression diagnostics owned by the orchestrator.
@@ -333,6 +334,7 @@ fn build_characters_in_scene(
                     .and_then(|c| c.master_image_path.as_ref())
                     .map(|p| !p.is_empty())
                     .unwrap_or(false),
+                prompt_only_description: None,
             }
         })
         .collect()
@@ -546,8 +548,41 @@ async fn generate_image_for_scene(
         })
         .collect();
 
-    // 5. Build the scene prompt
-    let scene_prompt = parsed.scene_prompt_fragment();
+    // 5. Build the scene prompt, including character descriptions so the
+    //    model actually generates people in the image.
+    //    IPAdapter applies the face, but the base prompt must mention a person
+    //    or the model will only generate the environment.
+    let mut scene_prompt = parsed.scene_prompt_fragment();
+
+    // Append ipadapter character descriptions
+    for (cis, (_, db_char)) in &renderable {
+        let fragment = character_prompt_fragment(cis, db_char.as_ref());
+        if !fragment.is_empty() {
+            let region_prefix = match cis.region.to_lowercase().as_str() {
+                "left" => "person on the left, ",
+                "right" => "person on the right, ",
+                _ => "person, ",
+            };
+            scene_prompt = format!("{}, {}{}", scene_prompt, region_prefix, fragment);
+        } else {
+            // No fragment data — at minimum add "a person" so IPAdapter has something to work with
+            scene_prompt = format!("{}, a person", scene_prompt);
+        }
+    }
+
+    // Append prompt-only character descriptions (no reference image)
+    for cis in characters_in_scene.iter().filter(|c| c.needs_render && !c.has_reference_image) {
+        if let Some(ref desc) = cis.prompt_only_description {
+            let region_prefix = match cis.region.to_lowercase().as_str() {
+                "left" => "on the left, ",
+                "right" => "on the right, ",
+                _ => "",
+            };
+            scene_prompt = format!("{}, {}{}", scene_prompt, region_prefix, desc);
+        }
+    }
+
+    println!("[Orchestrator] Final scene prompt: {}...", &scene_prompt[..scene_prompt.len().min(150)]);
 
     // 6. Build the full image generation request
     let request = ImageGenRequest {
@@ -950,17 +985,39 @@ async fn get_characters_with_references(
     story_id: Option<i64>,
     state: &State<'_, OllamaState>,
 ) -> Result<Vec<CharacterLookup>, String> {
+    // Query characters that have reference images, story-scoped if possible,
+    // falling back to global if story_id is None or returns nothing.
     let rows: Vec<sqlx::sqlite::SqliteRow> = if let Some(sid) = story_id {
-        sqlx::query(
+        let scoped = sqlx::query(
             "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
              FROM characters WHERE story_id = ? AND master_image_path IS NOT NULL"
         )
         .bind(sid)
         .fetch_all(&state.db)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        if scoped.is_empty() {
+            // Fall back to global if story scope returns nothing
+            sqlx::query(
+                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
+                 FROM characters WHERE master_image_path IS NOT NULL"
+            )
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| e.to_string())?
+        } else {
+            scoped
+        }
     } else {
-        vec![]
+        // No story_id — query all characters with reference images
+        sqlx::query(
+            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style
+             FROM characters WHERE master_image_path IS NOT NULL"
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
     };
 
     Ok(rows.iter().map(|r| CharacterLookup {
@@ -1008,6 +1065,7 @@ mod tests {
             needs_render: true,
             db_id: Some(1),
             has_reference_image: true,
+            prompt_only_description: None,
         };
         let db = CharacterLookup {
             id: 1,
@@ -1036,6 +1094,7 @@ mod tests {
             needs_render: true,
             db_id: None,
             has_reference_image: false,
+            prompt_only_description: None,
         };
         let fragment = character_prompt_fragment(&cis, None);
         assert!(fragment.contains("portrait"));

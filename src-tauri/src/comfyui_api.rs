@@ -631,7 +631,13 @@ fn build_workflow_modifications(
          (malformed:1.2), blurry, lowres, watermark, text, signature, cropped, \
          out of frame, ugly, duplicate, cloned face, poorly drawn face, \
          (floating head:1.4), (detached head:1.4), (severed head:1.3), \
-         bad proportions, gross proportions, long neck, (mutation:1.2)"
+         bad proportions, gross proportions, long neck, (mutation:1.2), \
+         (asymmetric eyes:1.4), (crossed eyes:1.4), (lazy eye:1.3), \
+         (uneven eyes:1.4), (different sized eyes:1.4), (misaligned eyes:1.4), \
+         (bad eyes:1.3), (poorly drawn eyes:1.3), (extra eyes:1.3), \
+         (bad iris:1.3), (bad pupils:1.3), (distorted pupils:1.3), \
+         (dead eyes:1.2), (empty eyes:1.2), \
+         (bad face:1.3), (asymmetric face:1.3), (distorted face:1.3)"
     );
     let mut neg_inputs = HashMap::new();
     neg_inputs.insert("text".to_string(), Value::String(neg_text.to_string()));
@@ -670,7 +676,7 @@ fn build_workflow_modifications(
     }
 
     // --- Character reference images (nodes 50, 51, 52) ---
-    let ref_node_ids = ["50", "51", "52"];
+    let ref_node_ids = ["20", "21"];;
     for (i, ref_filename) in uploaded_refs.iter().enumerate() {
         if i >= ref_node_ids.len() {
             break;
@@ -682,7 +688,7 @@ fn build_workflow_modifications(
 
     // --- Mask images (nodes 60, 61, 62) ---
     if let Some(mask_name) = mask_filename {
-        let mask_node_ids = ["60", "61", "62"];
+        let mask_node_ids = ["40", "41"];
         for i in 0..request.characters.len().min(mask_node_ids.len()) {
             let mut inputs = HashMap::new();
             inputs.insert("image".to_string(), Value::String(mask_name.clone()));
@@ -929,8 +935,7 @@ mod tests {
         assert_eq!(mods["4"]["width"], json!(1152));
         assert_eq!(mods["4"]["height"], json!(896));
         // Ref image
-        assert_eq!(mods["50"]["image"], json!("ref_alice_0.png"));
-        // Mask
-        assert_eq!(mods["60"]["image"], json!("scene_mask.png"));
+        assert_eq!(mods["20"]["image"], json!("ref_alice_0.png"));
+        assert_eq!(mods["40"]["image"], json!("scene_mask.png"));
     }
 }

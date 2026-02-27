@@ -37,6 +37,8 @@ export interface CharacterInScene {
   db_id: number | null;
   /** Whether this character has a master reference image for IP-Adapter. */
   has_reference_image: boolean;
+  /** Text description for characters without a reference image (e.g. animals). */
+  prompt_only_description: string | null;
 }
 
 /**
