@@ -16,6 +16,10 @@ export interface ChatMessage {
   sender: 'user' | 'ai';
   data?: StoryResponse;
   image?: string;
+  /** DB primary key of the messages row — used to persist generated images. */
+  dbMessageId?: number;
+  /** Names of characters that were in this scene (needs_render=true). Used to filter image gen. */
+  sceneCharacterNames?: string[];
 }
 
 export interface ChatSummary {

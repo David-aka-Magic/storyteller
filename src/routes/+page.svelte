@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import TitleBar from '../components/layout/TitleBar.svelte';
   import Sidebar from '../components/layout/Sidebar.svelte';
   import TopBar from '../components/layout/TopBar.svelte';
   import MainView from '../components/layout/MainView.svelte';
@@ -13,7 +14,7 @@
   import { currentTheme, applyTheme } from '$lib/stores/theme';
   import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
   import { readFileBase64 } from '$lib/api/image-gen';
-  import { getChatList, newChat, loadChat, deleteChats, clearHistory, setChatCharacter } from '$lib/api/chat';
+  import { getChatList, newChat, loadChat, deleteChats, clearHistory, setChatCharacter, saveImageForMessage } from '$lib/api/chat';
   import {
     listCharactersForStory,
     addCharacter, updateCharacter,
@@ -52,37 +53,53 @@
   // Orchestrator state
   let lastTurnResult: StoryTurnResult | null = null;
 
-  function mapMessagesToFrontend(backendMessages: any[]): ChatMessage[] {
+  async function mapMessagesToFrontend(backendMessages: any[]): Promise<ChatMessage[]> {
     let idCounter = Date.now();
-    return backendMessages.map((msg, index) => {
-        let chatMsg: ChatMessage = {
-            id: idCounter + index,
-            text: msg.content,
-            sender: msg.role === 'user' ? 'user' : 'ai',
-            data: undefined,
-            image: undefined
-        };
+    const results: ChatMessage[] = [];
+    for (let index = 0; index < backendMessages.length; index++) {
+      const msg = backendMessages[index];
+      let chatMsg: ChatMessage = {
+          id: idCounter + index,
+          text: msg.content,
+          sender: msg.role === 'user' ? 'user' : 'ai',
+          data: undefined,
+          image: undefined,
+          dbMessageId: msg.db_id ?? undefined,
+      };
 
-        if (msg.images && msg.images.length > 0) chatMsg.image = msg.images[0];
-
-        if (chatMsg.sender === 'ai' && msg.content.trim().startsWith('{')) {
-            try {
-                const parsed = JSON.parse(msg.content);
-                if (parsed.story_json || parsed.sd_json) {
-                    let storyText = parsed.story_json?.response || parsed.story_json || parsed.response || "Story loaded.";
-                    if (typeof storyText !== 'string') storyText = "Story data error.";
-
-                    chatMsg.data = {
-                        story: storyText,
-                        sd_prompt: parsed.sd_json?.look,
-                        sd_details: parsed.sd_json,
-                    };
-                    chatMsg.text = "";
-                }
-            } catch (e) { chatMsg.text = msg.content; }
+      if (msg.images && msg.images.length > 0) {
+        const imgPath: string = msg.images[0];
+        if (imgPath.startsWith('data:')) {
+          chatMsg.image = imgPath;
+        } else {
+          try {
+            const base64 = await readFileBase64(imgPath);
+            chatMsg.image = `data:image/png;base64,${base64}`;
+          } catch (e) {
+            console.warn('[mapMessages] Failed to load image:', imgPath, e);
+          }
         }
-        return chatMsg;
-    });
+      }
+
+      if (chatMsg.sender === 'ai' && msg.content.trim().startsWith('{')) {
+          try {
+              const parsed = JSON.parse(msg.content);
+              if (parsed.story_json || parsed.sd_json) {
+                  let storyText = parsed.story_json?.response || parsed.story_json || parsed.response || "Story loaded.";
+                  if (typeof storyText !== 'string') storyText = "Story data error.";
+
+                  chatMsg.data = {
+                      story: storyText,
+                      sd_prompt: parsed.sd_json?.look,
+                      sd_details: parsed.sd_json,
+                  };
+                  chatMsg.text = "";
+              }
+          } catch (e) { chatMsg.text = msg.content; }
+      }
+      results.push(chatMsg);
+    }
+    return results;
   }
 
   async function fetchChatList() {
@@ -102,7 +119,7 @@
 
     try {
       const msgs = await loadChat(id) as any[];
-      messages = mapMessagesToFrontend(msgs);
+      messages = await mapMessagesToFrontend(msgs);
 
       const chat = chatList.find(c => c.id === id);
       selectedCharacterIds.clear();
@@ -197,6 +214,8 @@
             sd_prompt: sdPrompt,
             sd_details: sdDetails,
           },
+          dbMessageId: result.assistant_message_id ?? undefined,
+          sceneCharacterNames: result.characters.map(c => c.name),
         };
 
         if (result.generated_image_path) {
@@ -223,11 +242,18 @@
   }
 
   // Called by ChatArea when a per-message image is generated
-  function handleImageGenerated(msgId: number, src: string) {
+  function handleImageGenerated(msgId: number, src: string, filePath: string) {
     const idx = messages.findIndex(m => m.id === msgId);
     if (idx !== -1) {
       messages[idx] = { ...messages[idx], image: src };
       messages = messages;
+
+      const dbMsgId = messages[idx].dbMessageId;
+      if (dbMsgId) {
+        saveImageForMessage(dbMsgId, currentChatId, filePath).catch(e =>
+          console.warn('[handleImageGenerated] Failed to persist image:', e)
+        );
+      }
     }
   }
 
@@ -242,9 +268,13 @@
     if (!lastAiMsg || isLoading) return;
     const storyId = selectedStoryId && selectedStoryId !== '1' ? parseInt(selectedStoryId) : undefined;
     try {
-      const path = await generateSceneImageForTurn(lastAiMsg.data!.sd_prompt!, storyId);
+      const path = await generateSceneImageForTurn(
+        lastAiMsg.data!.sd_prompt!,
+        storyId,
+        lastAiMsg.sceneCharacterNames
+      );
       const base64 = await readFileBase64(path);
-      handleImageGenerated(lastAiMsg.id, `data:image/png;base64,${base64}`);
+      handleImageGenerated(lastAiMsg.id, `data:image/png;base64,${base64}`, path);
     } catch (e) { console.error('[TopBar] Image gen failed:', e); }
   }
 
@@ -361,6 +391,7 @@
 </script>
 
 <main>
+  <TitleBar title={chatList.find(c => c.id === currentChatId)?.title ?? 'AI Story Writer'} />
   <div class="app-layout">
     <Sidebar
       {chatList} {currentChatId} {isLoading} {selectionState}
@@ -479,13 +510,14 @@
     flex-direction: column;
     font-family: 'Segoe UI', Arial, sans-serif;
     background: var(--bg-primary);
+    overflow: hidden;
   }
 
   .app-layout {
     flex: 1;
     display: flex;
     overflow: hidden;
-    width: 100%;
+    min-height: 0;
   }
 
   .main-column {

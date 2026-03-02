@@ -12,6 +12,10 @@ pub struct Message {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    /// DB primary key of the messages row (None when constructed for Ollama API calls).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub db_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -25,3 +25,7 @@ export async function clearHistory(id: number): Promise<void> {
 export async function setChatCharacter(chatId: number, characterId: number | null): Promise<void> {
   return invoke('set_chat_character', { chatId, characterId });
 }
+
+export async function saveImageForMessage(messageId: number, chatId: number, filePath: string): Promise<void> {
+  return invoke('save_image_for_message', { messageId, chatId, filePath });
+}

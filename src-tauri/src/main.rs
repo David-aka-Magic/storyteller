@@ -130,6 +130,7 @@ fn main() {
             text_gen::orchestrator::process_story_turn,
             text_gen::orchestrator::generate_scene_image_for_turn,
             text_gen::orchestrator::get_compression_diagnostics,
+            text_gen::orchestrator::regenerate_story,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,6 +2,7 @@
 <script lang="ts">
   import Modal from '../shared/Modal.svelte';
   import ThemeSettings from './ThemeSettings.svelte';
+  import ContentSettings from './ContentSettings.svelte';
   import ServiceSettings from './ServiceSettings.svelte';
   import AboutSection from './AboutSection.svelte';
 
@@ -13,7 +14,7 @@
     onclose?: () => void;
   } = $props();
 
-  type Tab = 'theme' | 'services' | 'about';
+  type Tab = 'theme' | 'content' | 'services' | 'about';
   let activeTab: Tab = $state('theme');
 </script>
 
@@ -26,6 +27,13 @@
         onclick={() => (activeTab = 'theme')}
       >
         🎨 Theme
+      </button>
+      <button
+        class="tab-btn"
+        class:active={activeTab === 'content'}
+        onclick={() => (activeTab = 'content')}
+      >
+        🔒 Content
       </button>
       <button
         class="tab-btn"
@@ -46,6 +54,9 @@
     <div class="tab-content">
       {#if activeTab === 'theme'}
         <ThemeSettings />
+      {/if}
+      {#if activeTab === 'content'}
+        <ContentSettings />
       {/if}
       {#if activeTab === 'services'}
         <ServiceSettings />

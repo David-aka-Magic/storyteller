@@ -1,10 +1,11 @@
 <!-- src/components/chat/ChatArea.svelte — Messages list + input -->
 <script lang="ts">
+  import { tick } from 'svelte';
   import ChatInput from './ChatInput.svelte';
   import MessageBubble from './MessageBubble.svelte';
   import { regenerateStory, generateSceneImageForTurn } from '$lib/api/text-gen';
   import { readFileBase64 } from '$lib/api/image-gen';
-  import type { ChatMessage, StoryResponse, Phase1Response } from '$lib/types';
+  import type { ChatMessage, StoryTurnResult } from '$lib/types';
 
   let {
     messages = [],
@@ -22,9 +23,24 @@
     activeCharacterId?: string | null;
     storyId?: number | null;
     onsendmessage?: (text: string) => void;
-    onimagegenerated?: (msgId: number, src: string) => void;
+    onimagegenerated?: (msgId: number, src: string, filePath: string) => void;
     onregenerated?: (newMsg: ChatMessage) => void;
   } = $props();
+
+  let messagesContainer: HTMLDivElement;
+
+  async function scrollToBottom() {
+    await tick();
+    if (messagesContainer) {
+      messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'smooth' });
+    }
+  }
+
+  $effect(() => {
+    messages.length;
+    isLoading;
+    scrollToBottom();
+  });
 
   // Local loading flag for regenerate (separate from parent isLoading)
   let isRegenerating = $state(false);
@@ -39,6 +55,7 @@
   }
 
   async function generateImage(msg: ChatMessage) {
+    if (generatingImages.has(msg.id)) return;
     const prompt = msg.data?.sd_prompt || msg.data?.story;
     if (!prompt) {
       setImageError(msg.id, 'No text available to generate an image.');
@@ -48,9 +65,10 @@
     setImageError(msg.id, null);
     generatingImages = new Set([...generatingImages, msg.id]);
     try {
-      const path = await generateSceneImageForTurn(prompt, storyId ?? undefined);
+      const path = await generateSceneImageForTurn(prompt, storyId ?? undefined, msg.sceneCharacterNames);
       const base64 = await readFileBase64(path);
-      onimagegenerated?.(msg.id, `data:image/png;base64,${base64}`);
+      onimagegenerated?.(msg.id, `data:image/png;base64,${base64}`, path);
+      await scrollToBottom();
     } catch (e) {
       console.error('Image gen failed:', e);
       setImageError(msg.id, String(e));
@@ -64,20 +82,24 @@
     isRegenerating = true;
 
     try {
-      const response = await regenerateStory(currentChatId);
+      const result: StoryTurnResult = await regenerateStory(currentChatId, storyId ?? undefined);
 
-      let newAiMsg: ChatMessage = { id: Date.now(), text: '', sender: 'ai', data: undefined };
+      const sdPrompt = result.scene
+        ? [result.scene.location, result.scene.lighting, result.scene.mood]
+            .filter(Boolean).join(', ')
+        : undefined;
 
-      if (response && typeof response === 'object') {
-        if ('type' in response && (response as any).type === 'phase1') {
-          newAiMsg.text = (response as Phase1Response).text;
-        } else if ('story' in response) {
-          newAiMsg.text = '';
-          newAiMsg.data = response as StoryResponse;
-        }
-      } else if (typeof response === 'string') {
-        newAiMsg.text = response;
-      }
+      const newAiMsg: ChatMessage = {
+        id: Date.now(),
+        text: '',
+        sender: 'ai',
+        data: {
+          story: result.story_text,
+          sd_prompt: sdPrompt,
+        },
+        sceneCharacterNames: result.characters.map(c => c.name),
+        dbMessageId: result.assistant_message_id ?? undefined,
+      };
 
       onregenerated?.(newAiMsg);
     } catch (e) {
@@ -93,7 +115,7 @@
 
 <div class="chat-main">
   <div class="chat-container">
-    <div class="messages" id="message-box">
+    <div class="messages" id="message-box" bind:this={messagesContainer}>
       {#each messages as msg, i (msg.id)}
         <MessageBubble
           message={msg}

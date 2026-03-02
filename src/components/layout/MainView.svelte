@@ -19,7 +19,7 @@
     storyId?: number | null;
     activeCharacterId?: string | null;
     onsendmessage?: (text: string) => void;
-    onimagegenerated?: (msgId: number, src: string) => void;
+    onimagegenerated?: (msgId: number, src: string, filePath: string) => void;
     onregenerated?: (newMsg: ChatMessage) => void;
   } = $props();
 </script>

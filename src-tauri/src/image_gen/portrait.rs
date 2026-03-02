@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
+use crate::config::ConfigState;
 use crate::state::OllamaState;
 
 // ============================================================================
@@ -579,6 +580,7 @@ fn build_portrait_workflow(
 #[tauri::command]
 pub async fn generate_master_portrait(
     request: MasterPortraitRequest,
+    config_state: State<'_, ConfigState>,
     app: AppHandle,
 ) -> Result<MasterPortraitResult, String> {
     let base_url = request
@@ -597,7 +599,19 @@ pub async fn generate_master_portrait(
 
     // 2. Build prompts
     let prompt = build_portrait_prompt(&request);
-    let negative = build_negative_prompt(request.art_style.as_deref());
+    let mut negative = build_negative_prompt(request.art_style.as_deref());
+
+    // Append SFW negative terms if content rating is sfw
+    let content_rating = {
+        let config = config_state.0.lock().map_err(|e| e.to_string())?;
+        config.content_rating.clone()
+    };
+    if content_rating == "sfw" {
+        negative.push_str(
+            ", nsfw, nude, naked, nudity, suggestive, seductive, \
+             revealing clothing, cleavage, lingerie, exposed skin",
+        );
+    }
 
     // FIX: ComfyUI requires seed >= 0. Generate a random seed if none provided
     // or if a negative value was passed (old sentinel value).

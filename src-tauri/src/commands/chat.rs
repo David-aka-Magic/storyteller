@@ -34,7 +34,11 @@ pub async fn new_chat(state: State<'_, OllamaState>) -> Result<i64, String> {
 #[tauri::command]
 pub async fn load_chat(id: i64, state: State<'_, OllamaState>) -> Result<Vec<Message>, String> {
     let rows = sqlx::query(
-        "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
+        "SELECT m.id as message_id, m.role, m.content, i.file_path as image_path \
+         FROM messages m \
+         LEFT JOIN images i ON i.message_id = m.id \
+         WHERE m.chat_id = ? \
+         ORDER BY m.timestamp ASC",
     )
     .bind(id)
     .fetch_all(&state.db)
@@ -43,10 +47,14 @@ pub async fn load_chat(id: i64, state: State<'_, OllamaState>) -> Result<Vec<Mes
 
     let messages: Vec<Message> = rows
         .iter()
-        .map(|row| Message {
-            role: row.get("role"),
-            content: row.get("content"),
-            images: None,
+        .map(|row| {
+            let image_path: Option<String> = row.get("image_path");
+            Message {
+                role: row.get("role"),
+                content: row.get("content"),
+                images: image_path.map(|p| vec![p]),
+                db_id: Some(row.get::<i64, _>("message_id")),
+            }
         })
         .collect();
 

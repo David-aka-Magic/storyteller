@@ -74,11 +74,3 @@ export async function previewPortraitPrompt(request: MasterPortraitRequest): Pro
 export async function saveMasterPortrait(request: SaveMasterPortraitRequest): Promise<string> {
   return invoke('save_master_portrait', { request });
 }
-
-export async function saveImageForMessage(
-  messageId: number,
-  chatId: number,
-  filePath: string,
-): Promise<void> {
-  return invoke('save_image_for_message', { messageId, chatId, filePath });
-}

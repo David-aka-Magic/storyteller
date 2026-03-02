@@ -38,7 +38,7 @@
     type CharacterProfile,
   } from '$lib/types';
   import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
-  import { saveImageForMessage } from '$lib/api/image-gen';
+  import { saveImageForMessage } from '$lib/api/chat';
 
   import {
     currentStory,

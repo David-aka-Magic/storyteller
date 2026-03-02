@@ -19,17 +19,22 @@ export async function processStoryTurn(
 
 export async function generateSceneImageForTurn(
   scenePrompt: string,
-  storyId?: number
+  storyId?: number,
+  characterNames?: string[]
 ): Promise<string> {
-  return invoke('generate_scene_image_for_turn', { scenePrompt, storyId: storyId ?? null });
+  return invoke('generate_scene_image_for_turn', {
+    scenePrompt,
+    storyId: storyId ?? null,
+    characterNames: (characterNames && characterNames.length > 0) ? characterNames : null,
+  });
 }
 
 export async function getCompressionDiagnostics(chatId: number): Promise<OrchestratorCompressionInfo> {
   return invoke('get_compression_diagnostics', { chatId });
 }
 
-export async function regenerateStory(id: number): Promise<unknown> {
-  return invoke('regenerate_story', { id });
+export async function regenerateStory(id: number, storyId?: number): Promise<StoryTurnResult> {
+  return invoke('regenerate_story', { id, storyId: storyId ?? null });
 }
 
 // ---- LLM Parser ----

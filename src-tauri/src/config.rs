@@ -7,15 +7,23 @@ use tauri::{AppHandle, Manager};
 pub struct AppConfig {
     /// Path to the stable-diffusion-webui folder
     pub sd_webui_path: String,
-    
+
     /// Ollama base URL (default: http://localhost:11434)
     pub ollama_url: String,
-    
+
     /// Stable Diffusion API URL (default: http://127.0.0.1:7860)
     pub sd_api_url: String,
-    
+
     /// Auto-start services when app launches
     pub auto_start_services: bool,
+
+    /// Content rating: "sfw" or "nsfw"
+    #[serde(default = "default_content_rating")]
+    pub content_rating: String,
+}
+
+fn default_content_rating() -> String {
+    "sfw".to_string()
 }
 
 impl Default for AppConfig {
@@ -26,6 +34,7 @@ impl Default for AppConfig {
             ollama_url: "http://localhost:11434".to_string(),
             sd_api_url: "http://127.0.0.1:7860".to_string(),
             auto_start_services: true,
+            content_rating: "sfw".to_string(),
         }
     }
 }

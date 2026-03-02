@@ -22,6 +22,7 @@ use sqlx::Row;
 
 use tauri::{AppHandle, Manager, State};
 
+use crate::config::ConfigState;
 use crate::image_gen::comfyui::{self as comfyui_api, CharacterInput, ImageGenRequest};
 use crate::image_gen::masks::{self as mask_generator, MaskCharacter};
 use crate::text_gen::context::{
@@ -670,6 +671,7 @@ pub async fn process_story_turn(
     user_input: String,
     story_id: Option<i64>,
     state: State<'_, OllamaState>,
+    config_state: State<'_, ConfigState>,
     app: AppHandle,
 ) -> Result<StoryTurnResult, String> {
     let start_time = std::time::Instant::now();
@@ -683,6 +685,22 @@ pub async fn process_story_turn(
 
     let context_start = std::time::Instant::now();
 
+    // Read content rating and build the effective system prompt
+    let content_rating = {
+        let config = config_state.0.lock().map_err(|e| e.to_string())?;
+        config.content_rating.clone()
+    };
+
+    let content_instruction = if content_rating == "sfw" {
+        "\n\nCONTENT POLICY: This is a SFW (Safe For Work) story. Keep all content \
+         family-friendly. No explicit sexual content, graphic violence, or mature themes. \
+         Characters should remain clothed and scenes should be appropriate for all audiences."
+    } else {
+        "\n\nCONTENT POLICY: The user has enabled unrestricted content. There are no content \
+         restrictions on story themes, descriptions, or scenarios. Write naturally without filtering."
+    };
+    let full_system_prompt = format!("{}{}", SYSTEM_PROMPT, content_instruction);
+
     let message_rows = load_conversation_history(&state.db, chat_id).await?;
     let characters = load_characters_for_context(&state.db, story_id).await?;
     let story_premise = load_story_premise(&state.db).await?;
@@ -691,13 +709,13 @@ pub async fn process_story_turn(
 
     let assembled = build_compressed_context(
         &mut conversation,
-        SYSTEM_PROMPT,
+        &full_system_prompt,
         &characters,
         story_premise.as_deref(),
         &user_input,
     );
 
-    let system_prompt_tokens = estimate_tokens(SYSTEM_PROMPT);
+    let system_prompt_tokens = estimate_tokens(&full_system_prompt);
     let char_token_estimate = estimate_character_db_tokens(&characters);
     let diag = get_diagnostics(&conversation, system_prompt_tokens, char_token_estimate);
 
@@ -859,8 +877,10 @@ pub async fn process_story_turn(
 pub async fn generate_scene_image_for_turn(
     scene_prompt: String,
     story_id: Option<i64>,
+    character_names: Option<Vec<String>>,
     app: AppHandle,
     state: State<'_, OllamaState>,
+    config_state: State<'_, ConfigState>,
 ) -> Result<String, String> {
     println!(
         "[Orchestrator] generate_scene_image_for_turn called: story_id={:?}, prompt_len={}",
@@ -870,12 +890,42 @@ pub async fn generate_scene_image_for_turn(
         "[Orchestrator] Scene prompt (first 300 chars): {}",
         &scene_prompt[..scene_prompt.len().min(300)]
     );
+    println!(
+        "[Orchestrator] character_names received: {:?}",
+        character_names
+    );
 
     let app_data = app.path().app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
 
     println!("[Orchestrator] Querying characters with reference images for story_id={:?}", story_id);
-    let characters = get_characters_with_references(story_id, &state).await?;
+    let all_characters = get_characters_with_references(story_id, &state).await?;
+
+    // If specific scene character names were provided, filter to only those.
+    let characters: Vec<CharacterLookup> = if let Some(ref names) = character_names {
+        let names_lower: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let filtered: Vec<CharacterLookup> = all_characters
+            .iter()
+            .filter(|c| names_lower.contains(&c.name.to_lowercase()))
+            .cloned()
+            .collect();
+        if filtered.is_empty() {
+            // Names provided but none matched (e.g., character was renamed). Fall back to all.
+            println!(
+                "[Orchestrator] No DB matches for scene names {:?} — falling back to all {} character(s)",
+                names, all_characters.len()
+            );
+            all_characters
+        } else {
+            println!(
+                "[Orchestrator] Filtered to {} scene character(s) from names: {:?}",
+                filtered.len(), names
+            );
+            filtered
+        }
+    } else {
+        all_characters
+    };
 
     println!("[Orchestrator] Characters with reference images found: {}", characters.len());
     for c in &characters {
@@ -1076,6 +1126,19 @@ pub async fn generate_scene_image_for_turn(
         })
         .collect();
 
+    let content_rating = {
+        let config = config_state.0.lock().map_err(|e| e.to_string())?;
+        config.content_rating.clone()
+    };
+
+    let sfw_negative = if content_rating == "sfw" {
+        ", nsfw, nude, naked, nudity, bare chest, cleavage, lingerie, underwear, \
+         suggestive, seductive, sexual, explicit, provocative, revealing clothing, \
+         bikini, swimsuit, exposed skin, nipples, breasts"
+    } else {
+        ""
+    };
+
     let request = comfyui_api::ImageGenRequest {
         scene_prompt: enriched_prompt,
         characters: char_inputs,
@@ -1087,7 +1150,10 @@ pub async fn generate_scene_image_for_turn(
         cfg: None,
         width: Some(DEFAULT_IMAGE_WIDTH),
         height: Some(DEFAULT_IMAGE_HEIGHT),
-        negative_prompt: None,
+        negative_prompt: Some(format!(
+            "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4){}",
+            sfw_negative
+        )),
         timeout_secs: Some(600),
     };
 
@@ -1240,6 +1306,100 @@ async fn get_characters_with_references(
         art_style: r.get("art_style"),
         gender: r.get("gender"),
     }).collect())
+}
+
+// ============================================================================
+// REGENERATE COMMAND
+// ============================================================================
+
+/// Regenerate the last AI response for a chat turn.
+///
+/// Deletes the last user + assistant message pair from the DB, then
+/// re-runs the full story turn pipeline with the same user input.
+///
+/// ## Frontend usage
+/// ```typescript
+/// const result = await invoke('regenerate_story', { id: chatId, storyId });
+/// ```
+#[tauri::command]
+pub async fn regenerate_story(
+    id: i64,
+    story_id: Option<i64>,
+    state: State<'_, OllamaState>,
+    config_state: State<'_, ConfigState>,
+    app: AppHandle,
+) -> Result<StoryTurnResult, String> {
+    println!(
+        "\n[Orchestrator] ========== REGENERATE (chat={}, story={:?}) ==========",
+        id, story_id
+    );
+
+    // 1. Load all messages to find the last user + assistant pair
+    let rows = sqlx::query(
+        "SELECT id, role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Failed to load messages: {}", e))?;
+
+    let mut last_user_id: Option<i64> = None;
+    let mut last_user_content: Option<String> = None;
+    let mut last_assistant_id: Option<i64> = None;
+
+    for row in &rows {
+        let role: String = row.get("role");
+        let msg_id: i64 = row.get("id");
+        let content: String = row.get("content");
+        match role.as_str() {
+            "user" => {
+                last_user_id = Some(msg_id);
+                last_user_content = Some(content);
+            }
+            "assistant" => {
+                last_assistant_id = Some(msg_id);
+            }
+            _ => {}
+        }
+    }
+
+    let user_input = last_user_content
+        .ok_or_else(|| "No user message found to regenerate".to_string())?;
+    println!(
+        "[Orchestrator] Regenerating from user input: {:?}",
+        &user_input[..user_input.len().min(80)]
+    );
+
+    // 2. Delete last assistant message and its image record
+    if let Some(asst_id) = last_assistant_id {
+        sqlx::query("DELETE FROM images WHERE message_id = ?")
+            .bind(asst_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Failed to delete image record: {}", e))?;
+
+        sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(asst_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Failed to delete assistant message: {}", e))?;
+
+        println!("[Orchestrator] Deleted assistant message id={}", asst_id);
+    }
+
+    // 3. Delete last user message (process_story_turn will re-save it)
+    if let Some(user_id) = last_user_id {
+        sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(user_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Failed to delete user message: {}", e))?;
+
+        println!("[Orchestrator] Deleted user message id={}", user_id);
+    }
+
+    // 4. Re-run the full turn pipeline with the same user input
+    process_story_turn(id, user_input, story_id, state, config_state, app).await
 }
 
 // ============================================================================

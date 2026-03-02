@@ -6,6 +6,7 @@ export interface AppConfig {
   ollama_url: string;
   sd_api_url: string;
   auto_start_services: boolean;
+  content_rating: 'sfw' | 'nsfw';
 }
 
 export async function getConfig(): Promise<AppConfig> {
