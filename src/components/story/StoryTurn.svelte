@@ -9,9 +9,7 @@
 -->
 <script lang="ts">
   import { convertFileSrc } from '@tauri-apps/api/core';
-  import { createEventDispatcher } from 'svelte';
-  import type { CharacterInScene } from '$lib/orchestrator-types';
-  import type { SceneJson } from '$lib/llm-parser-types';
+  import type { CharacterInScene, SceneJson } from '$lib/types';
 
   export let turnNumber: number = 0;
   export let userAction: string = '';
@@ -23,8 +21,13 @@
   export let parseWarnings: string[] = [];
   export let imageError: string | null = null;
   export let isLatestTurn: boolean = false;
+  /** DB message_id for this turn's assistant message (needed to persist generated images). */
+  export let messageId: number | null = null;
+  /** Whether an image is currently being generated for this specific turn. */
+  export let isGeneratingImage: boolean = false;
 
-  const dispatch = createEventDispatcher();
+  export let oncharacterclick: ((char: CharacterInScene) => void) | undefined = undefined;
+  export let onillustratescene: ((data: { storyText: string; messageId: number | null; turnNumber: number }) => void) | undefined = undefined;
 
   /** Convert an absolute file path to a Tauri asset URL */
   function assetSrc(path: string): string {
@@ -64,8 +67,12 @@
 
   function handleCharacterClick(char: CharacterInScene) {
     if (char.db_id) {
-      dispatch('characterClick', char);
+      oncharacterclick?.(char);
     }
+  }
+
+  function handleIllustrate() {
+    onillustratescene?.({ storyText, messageId, turnNumber });
   }
 
   $: paragraphs = formatNarrative(storyText);
@@ -168,6 +175,24 @@
       {/each}
     </div>
 
+    <!-- Illustrate / Redraw Image Button -->
+    <div class="image-actions">
+      {#if isGeneratingImage}
+        <span class="img-generating">
+          <span class="img-gen-pulse"></span>
+          Painting the scene...
+        </span>
+      {:else}
+        <button class="illustrate-btn" on:click={handleIllustrate} title={imagePath ? 'Generate a new image for this scene' : 'Generate an image for this scene'}>
+          {#if imagePath}
+            ↺ Redraw Image
+          {:else}
+            🎨 Illustrate Scene
+          {/if}
+        </button>
+      {/if}
+    </div>
+
     <!-- Parse Warnings -->
     {#if parseWarnings.length > 0 && isLatestTurn}
       <div class="parse-warnings">
@@ -178,7 +203,7 @@
     {/if}
 
     <!-- Image Generation Error -->
-    {#if imageError && isLatestTurn}
+    {#if imageError}
       <div class="image-gen-error">
         <span class="error-icon-small">🖼</span>
         <span>Image generation failed: {imageError}</span>
@@ -484,5 +509,50 @@
   .error-icon-small {
     font-size: 1rem;
     opacity: 0.7;
+  }
+
+  /* ── Image Actions (Illustrate / Redraw) ── */
+  .image-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  .illustrate-btn {
+    padding: 5px 12px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-muted, #6e7681);
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 500;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+
+  .illustrate-btn:hover {
+    background: rgba(88, 166, 255, 0.12);
+    border-color: rgba(88, 166, 255, 0.3);
+    color: var(--accent-primary, #58a6ff);
+  }
+
+  .img-generating {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted, #6e7681);
+    font-style: italic;
+  }
+
+  .img-gen-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-primary, #58a6ff);
+    animation: pulse 1.2s ease-in-out infinite;
+    flex-shrink: 0;
   }
 </style>

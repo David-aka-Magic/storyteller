@@ -10,14 +10,21 @@
 // and coordinates with the orchestrator for turn-by-turn persistence.
 
 import { writable, derived, get } from 'svelte/store';
-import { invoke } from '@tauri-apps/api/core';
 import type {
   StorySession,
   StorySummary,
   StoryStoreState,
   ExportFormat,
-} from '../story-manager-types';
-import type { CompressedHistory } from '../context-compression-types';
+  CompressedHistory,
+} from '$lib/types';
+import {
+  createStory as apiCreateStory,
+  loadStory as apiLoadStory,
+  saveStoryState as apiSaveStoryState,
+  listStories as apiListStories,
+  deleteStory as apiDeleteStory,
+  exportStory as apiExportStory,
+} from '$lib/api/story';
 
 // ============================================================================
 // STORES
@@ -83,11 +90,7 @@ export async function newStory(
   storyState.update((s) => ({ ...s, isLoading: true, lastError: null }));
 
   try {
-    const storyId = await invoke<number>('create_story', {
-      title,
-      description,
-      initialCharacterIds: initialCharacterIds ?? null,
-    });
+    const storyId = await apiCreateStory(title, description, initialCharacterIds);
 
     // Load the newly created story
     await loadStory(storyId);
@@ -112,7 +115,7 @@ export async function loadStory(storyId: number): Promise<StorySession | null> {
   storyState.update((s) => ({ ...s, isLoading: true, lastError: null }));
 
   try {
-    const session = await invoke<StorySession>('load_story', { storyId });
+    const session = await apiLoadStory(storyId);
 
     storyState.update((s) => ({
       ...s,
@@ -146,12 +149,12 @@ export async function saveStory(): Promise<boolean> {
   }
 
   try {
-    await invoke('save_story_state', {
-      storyId: state.currentStory.story_id,
-      compressedHistory: state.currentStory.compressed_history,
-      currentLocation: state.currentStory.current_location,
-      thumbnailPath: null, // Updated separately when images are generated
-    });
+    await apiSaveStoryState(
+      state.currentStory.story_id,
+      state.currentStory.compressed_history,
+      state.currentStory.current_location,
+      null // thumbnailPath updated separately when images are generated
+    );
 
     storyState.update((s) => ({ ...s, isDirty: false }));
     console.log(`[StoryStore] Saved story ${state.currentStory.story_id}`);
@@ -169,7 +172,7 @@ export async function saveStory(): Promise<boolean> {
  */
 export async function refreshStoryList(): Promise<StorySummary[]> {
   try {
-    const list = await invoke<StorySummary[]>('list_stories');
+    const list = await apiListStories();
     storyState.update((s) => ({ ...s, stories: list }));
     return list;
   } catch (e) {
@@ -188,7 +191,7 @@ export async function deleteStory(storyId: number): Promise<boolean> {
   storyState.update((s) => ({ ...s, isLoading: true, lastError: null }));
 
   try {
-    await invoke('delete_story', { storyId });
+    await apiDeleteStory(storyId);
 
     storyState.update((s) => ({
       ...s,
@@ -221,7 +224,7 @@ export async function exportStory(
   storyState.update((s) => ({ ...s, isLoading: true, lastError: null }));
 
   try {
-    const filePath = await invoke<string>('export_story', { storyId, format });
+    const filePath = await apiExportStory(storyId, format);
 
     storyState.update((s) => ({ ...s, isLoading: false }));
     console.log(`[StoryStore] Exported story ${storyId} to ${filePath}`);
@@ -329,12 +332,8 @@ export function updateThumbnail(thumbnailPath: string): void {
   // Save thumbnail immediately (not debounced)
   const state = get(storyState);
   if (state.currentStory) {
-    invoke('save_story_state', {
-      storyId: state.currentStory.story_id,
-      compressedHistory: null,
-      currentLocation: null,
-      thumbnailPath,
-    }).catch((e) => console.error('[StoryStore] Failed to save thumbnail:', e));
+    apiSaveStoryState(state.currentStory.story_id, null, null, thumbnailPath)
+      .catch((e) => console.error('[StoryStore] Failed to save thumbnail:', e));
   }
 }
 

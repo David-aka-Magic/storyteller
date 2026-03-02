@@ -8,14 +8,12 @@
     - Character/word count hint
 -->
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
-
   export let isGenerating: boolean = false;
   export let isGeneratingImage: boolean = false;
   export let disabled: boolean = false;
   export let placeholder: string = 'What do you do?';
 
-  const dispatch = createEventDispatcher();
+  export let onsubmit: ((text: string) => void) | undefined = undefined;
 
   let inputText = '';
   let textareaEl: HTMLTextAreaElement;
@@ -31,7 +29,7 @@
     const text = inputText.trim();
     if (!text || isDisabled) return;
 
-    dispatch('submit', text);
+    onsubmit?.(text);
     inputText = '';
 
     // Reset textarea height

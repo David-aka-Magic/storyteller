@@ -5,13 +5,13 @@
   Dispatches: 'select' (load & play), 'delete' (with story_id)
 -->
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
-  import type { StorySummary } from '$lib/story-manager-types';
+  import type { StorySummary } from '$lib/types';
 
   export let story: StorySummary;
 
-  const dispatch = createEventDispatcher();
+  export let onselect: ((storyId: number) => void) | undefined = undefined;
+  export let ondelete: ((storyId: number) => void) | undefined = undefined;
 
   // ── Thumbnail handling ──
   let thumbLoaded = false;
@@ -63,8 +63,8 @@
 
 <div
   class="story-card"
-  on:click={() => dispatch('select', story.story_id)}
-  on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && dispatch('select', story.story_id)}
+  on:click={() => onselect?.(story.story_id)}
+  on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && onselect?.(story.story_id)}
   role="button"
   tabindex="0"
   title="Continue: {story.title}"
@@ -125,8 +125,8 @@
   <!-- Delete Button (top-right, stops propagation) -->
   <div
     class="card-delete-btn"
-    on:click|stopPropagation={() => dispatch('delete', story.story_id)}
-    on:keydown|stopPropagation={(e) => (e.key === 'Enter' || e.key === ' ') && dispatch('delete', story.story_id)}
+    on:click|stopPropagation={() => ondelete?.(story.story_id)}
+    on:keydown|stopPropagation={(e) => (e.key === 'Enter' || e.key === ' ') && ondelete?.(story.story_id)}
     role="button"
     tabindex="0"
     title="Delete story"

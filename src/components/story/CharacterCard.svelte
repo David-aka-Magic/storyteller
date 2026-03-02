@@ -4,30 +4,44 @@
   Shows portrait, name, age, personality, master-image warning.
   Click to edit, dedicated delete button, optional quick-view on hover.
 
-  Dispatches: 'edit', 'delete', 'generatePortrait'
+  Callback props: onedit, ondelete, ongeneratePortrait, ontoggleselect
   Uses types.ts CharacterProfile (id: string) for compatibility with CharacterModal.
 -->
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
-  import type { CharacterProfile } from '../../lib/types';
+  import type { CharacterProfile } from '$lib/types';
 
-  export let character: CharacterProfile;
-  /** Whether this card is in "selected" state (for batch operations) */
-  export let selected: boolean = false;
-  /** Whether to show the selection checkbox */
-  export let selectable: boolean = false;
-
-  const dispatch = createEventDispatcher();
+  let {
+    character,
+    selected = false,
+    selectable = false,
+    showRemove = false,
+    onedit,
+    ondelete,
+    onremove,
+    ongeneratePortrait,
+    ontoggleselect,
+  }: {
+    character: CharacterProfile;
+    selected?: boolean;
+    selectable?: boolean;
+    /** When true, shows the "Remove from Story" button instead of the delete button. */
+    showRemove?: boolean;
+    onedit?: (c: CharacterProfile) => void;
+    ondelete?: (id: number) => void;
+    /** Called when the user removes the character from this story (not a full delete). */
+    onremove?: (id: number) => void;
+    ongeneratePortrait?: (c: CharacterProfile) => void;
+    ontoggleselect?: (id: number) => void;
+  } = $props();
 
   // ── Image source resolution ──
-  // Characters can have: base64 `image`, file-path `master_image_path`, or neither
-  let imgLoaded = false;
-  let imgError = false;
+  let imgLoaded = $state(false);
+  let imgError = $state(false);
 
-  $: portraitSrc = resolvePortrait(character);
-  $: hasMasterImage = !!(character as any).master_image_path;
-  $: hasAnyImage = !!character.image || hasMasterImage;
+  const portraitSrc = $derived(resolvePortrait(character));
+  const hasMasterImage = $derived(!!(character as any).master_image_path);
+  const hasAnyImage = $derived(!!character.image || hasMasterImage);
 
   function resolvePortrait(c: CharacterProfile): string | null {
     // Prefer master_image_path (file on disk) if available
@@ -54,7 +68,7 @@
   }
 
   // ── Quick View state ──
-  let showQuickView = false;
+  let showQuickView = $state(false);
   let quickViewTimer: ReturnType<typeof setTimeout> | null = null;
 
   function startQuickView() {
@@ -76,10 +90,10 @@
 <div
   class="char-card"
   class:selected
-  on:click={() => dispatch('edit', character)}
-  on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && dispatch('edit', character)}
-  on:mouseenter={startQuickView}
-  on:mouseleave={cancelQuickView}
+  onclick={() => onedit?.(character)}
+  onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && onedit?.(character)}
+  onmouseenter={startQuickView}
+  onmouseleave={cancelQuickView}
   role="button"
   tabindex="0"
   title="Edit {character.name}"
@@ -88,8 +102,8 @@
   {#if selectable}
     <div
       class="select-checkbox"
-      on:click|stopPropagation={() => dispatch('toggleSelect', character.id)}
-      on:keydown|stopPropagation={(e) => (e.key === 'Enter' || e.key === ' ') && dispatch('toggleSelect', character.id)}
+      onclick={(e) => { e.stopPropagation(); ontoggleselect?.(character.id); }}
+      onkeydown={(e) => { e.stopPropagation(); (e.key === 'Enter' || e.key === ' ') && ontoggleselect?.(character.id); }}
       role="checkbox"
       aria-checked={selected}
       tabindex="0"
@@ -112,8 +126,8 @@
         alt={character.name}
         class="portrait-img"
         class:loaded={imgLoaded}
-        on:load={() => imgLoaded = true}
-        on:error={() => imgError = true}
+        onload={() => imgLoaded = true}
+        onerror={() => imgError = true}
       />
     {:else}
       <span class="portrait-initial">{character.name.charAt(0).toUpperCase()}</span>
@@ -124,8 +138,8 @@
       <div
         class="missing-master"
         title="No master reference image — portraits won't use IP-Adapter"
-        on:click|stopPropagation={() => dispatch('generatePortrait', character)}
-        on:keydown|stopPropagation={(e) => (e.key === 'Enter') && dispatch('generatePortrait', character)}
+        onclick={(e) => { e.stopPropagation(); ongeneratePortrait?.(character); }}
+        onkeydown={(e) => { e.stopPropagation(); e.key === 'Enter' && ongeneratePortrait?.(character); }}
         role="button"
         tabindex="0"
       >
@@ -156,8 +170,8 @@
   <div class="card-actions">
     <div
       class="action-btn edit-btn"
-      on:click|stopPropagation={() => dispatch('edit', character)}
-      on:keydown|stopPropagation={(e) => (e.key === 'Enter') && dispatch('edit', character)}
+      onclick={(e) => { e.stopPropagation(); onedit?.(character); }}
+      onkeydown={(e) => { e.stopPropagation(); e.key === 'Enter' && onedit?.(character); }}
       role="button"
       tabindex="0"
       title="Edit character"
@@ -167,24 +181,40 @@
         <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path>
       </svg>
     </div>
-    <div
-      class="action-btn delete-btn"
-      on:click|stopPropagation={() => dispatch('delete', character.id)}
-      on:keydown|stopPropagation={(e) => (e.key === 'Enter') && dispatch('delete', character.id)}
-      role="button"
-      tabindex="0"
-      title="Delete character"
-    >
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <polyline points="3 6 5 6 21 6"></polyline>
-        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path>
-      </svg>
-    </div>
+    {#if showRemove}
+      <div
+        class="action-btn remove-btn"
+        onclick={(e) => { e.stopPropagation(); onremove?.(character.id); }}
+        onkeydown={(e) => { e.stopPropagation(); e.key === 'Enter' && onremove?.(character.id); }}
+        role="button"
+        tabindex="0"
+        title="Remove from story"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </div>
+    {:else}
+      <div
+        class="action-btn delete-btn"
+        onclick={(e) => { e.stopPropagation(); ondelete?.(character.id); }}
+        onkeydown={(e) => { e.stopPropagation(); e.key === 'Enter' && ondelete?.(character.id); }}
+        role="button"
+        tabindex="0"
+        title="Delete character"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path>
+        </svg>
+      </div>
+    {/if}
   </div>
 
   <!-- Quick View Popover -->
   {#if showQuickView}
-    <div class="quick-view" on:mouseenter={() => showQuickView = true} on:mouseleave={cancelQuickView}>
+    <div class="quick-view" onmouseenter={() => showQuickView = true} onmouseleave={cancelQuickView}>
       <div class="qv-header">
         {#if portraitSrc && !imgError}
           <img src={portraitSrc} alt={character.name} class="qv-portrait" />
@@ -418,6 +448,11 @@
 
   .delete-btn:hover {
     background: var(--accent-danger, #f85149);
+    color: #fff;
+  }
+
+  .remove-btn:hover {
+    background: rgba(227, 179, 65, 0.85);
     color: #fff;
   }
 

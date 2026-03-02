@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo build --manifest-path src-tauri/Cargo.toml)"
+      "Bash(cargo build --manifest-path src-tauri/Cargo.toml)",
+      "Bash(cargo build)",
+      "Bash(cargo test)",
+      "Bash(bun run check)",
+      "Bash(xargs grep -l \"import.*from.*[Cc]haracter\")"
     ]
   }
 }

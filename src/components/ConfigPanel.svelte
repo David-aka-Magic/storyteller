@@ -1,6 +1,6 @@
 <!-- src/components/ConfigPanel.svelte -->
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
+  import { listCharactersForStory } from '$lib/api/character';
   import type { StoryPremise, CharacterProfile } from '../lib/types';
 
   export let stories: StoryPremise[] = [];
@@ -34,23 +34,19 @@
 
   async function openPicker() {
       if (!selectedStoryId || selectedStoryId === '1') return;
-  
+
       pickerLoading = true;
       pickerError = '';
       pickerSelected = new Set();
       showPicker = true;
-  
+
       try {
-          const all = await invoke<CharacterProfile[]>('list_characters_for_story', { storyId: null });
-          const currentStoryId = parseInt(selectedStoryId, 10);
-          
-          // Show characters not in this story — use loose == to handle number/string mismatch
-          pickerCharacters = all.filter(c => {
-              const charStoryId = c.story_id ? Number(c.story_id) : null;
-              return charStoryId !== currentStoryId;
-          });
-  
-          console.log('[Picker] All characters:', all.length, 'Filtered:', pickerCharacters.length, 'Current story:', currentStoryId);
+          const all = await listCharactersForStory();
+          // Filter out characters already in this story by checking the current `characters` prop
+          const currentIds = new Set(characters.map(c => c.id));
+          pickerCharacters = all.filter(c => !currentIds.has(c.id));
+
+          console.log('[Picker] All characters:', all.length, 'Filtered (not in story):', pickerCharacters.length);
       } catch (e) {
           pickerError = `Failed to load characters: ${e}`;
       } finally {

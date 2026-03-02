@@ -8,11 +8,8 @@
     - Settings access
 -->
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
-  import type { SceneJson } from '$lib/llm-parser-types';
-  import type { CharacterInScene, OrchestratorCompressionInfo } from '$lib/orchestrator-types';
-  import type { CharacterProfile } from '$lib/character-types';
+  import type { SceneJson, CharacterInScene, OrchestratorCompressionInfo, CharacterProfile } from '$lib/types';
   import TokenMeter from './TokenMeter.svelte';
 
   export let scene: SceneJson | null = null;
@@ -22,7 +19,8 @@
   export let storyTitle: string = '';
   export let totalTurns: number = 0;
 
-  const dispatch = createEventDispatcher();
+  export let onopenesettings: (() => void) | undefined = undefined;
+  export let oncharacterclick: ((data: { char: CharacterInScene; profile?: CharacterProfile }) => void) | undefined = undefined;
 
   /** Find a full profile for a scene character by name or DB ID */
   function getProfile(char: CharacterInScene): CharacterProfile | undefined {
@@ -140,7 +138,7 @@
     <TokenMeter info={compressionInfo} compact={true} />
 
     <!-- Menu -->
-    <button class="header-menu-btn" on:click={() => dispatch('openSettings')} title="Settings">
+    <button class="header-menu-btn" on:click={() => onopenesettings?.()} title="Settings">
       ⚙
     </button>
   </div>
@@ -158,7 +156,7 @@
       {@const img = profileImage(profile)}
       <button
         class="character-row"
-        on:click={() => { dispatch('characterClick', { char, profile }); showCharacterPanel = false; }}
+        on:click={() => { oncharacterclick?.({ char, profile }); showCharacterPanel = false; }}
       >
         <div class="row-avatar" class:has-image={!!img}>
           {#if img}

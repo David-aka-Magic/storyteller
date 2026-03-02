@@ -15,12 +15,12 @@
     <StoryView
       storyId={123}
       chatId={456}
-      on:openSettings
-      on:characterClick
+      onopenesettings={() => ...}
+      oncharacterclick={(data) => ...}
     />
 -->
 <script lang="ts">
-  import { onMount, tick, createEventDispatcher } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
 
   import StoryTurn from './StoryTurn.svelte';
@@ -29,16 +29,16 @@
   import TokenMeter from './TokenMeter.svelte';
 
   import {
-    processStoryTurn,
     hasGeneratedImage,
     imageGenStatus,
     type StoryTurnResult,
     type CharacterInScene,
     type OrchestratorCompressionInfo,
-  } from '$lib/orchestrator-types';
-
-  import type { SceneJson } from '$lib/llm-parser-types';
-  import type { CharacterProfile } from '$lib/character-types';
+    type SceneJson,
+    type CharacterProfile,
+  } from '$lib/types';
+  import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
+  import { saveImageForMessage } from '$lib/api/image-gen';
 
   import {
     currentStory,
@@ -54,7 +54,9 @@
   export let storyDescription: string = '';
   export let characterProfiles: CharacterProfile[] = [];
 
-  const dispatch = createEventDispatcher();
+  export let oncharacterclick: ((data: CharacterInScene | { char: CharacterInScene; profile?: CharacterProfile }) => void) | undefined = undefined;
+  export let onshowcompressedhistory: ((summary: string | undefined) => void) | undefined = undefined;
+  export let onopenesettings: (() => void) | undefined = undefined;
 
   // ── Internal State ──
 
@@ -69,6 +71,8 @@
     parseStatus: 'ok' | 'partial' | 'fallback';
     parseWarnings: string[];
     imageError: string | null;
+    /** DB message_id of the assistant message (needed to persist images). */
+    messageId: number | null;
   }
 
   let turns: DisplayTurn[] = [];
@@ -81,6 +85,9 @@
   let isGenerating = false;
   let isGeneratingImage = false;
   let lastError: string | null = null;
+
+  /** turnNumber of the turn currently having an image generated (null = none) */
+  let generatingImageForTurn: number | null = null;
 
   // Scroll
   let scrollContainer: HTMLDivElement;
@@ -103,7 +110,7 @@
 
       // Rebuild display turns from recent_turns in the session
       if (session.recent_turns && session.recent_turns.length > 0) {
-        turns = session.recent_turns.map((rt, i) => {
+        turns = session.recent_turns.map((rt) => {
           let storyText = rt.assistant_response;
           // Try to parse story text from JSON
           try {
@@ -121,12 +128,13 @@
             turnNumber: rt.turn_number,
             userAction: rt.user_input,
             storyText: typeof storyText === 'string' ? storyText : 'Story data loaded.',
-            imagePath: null, // Historical turns don't have image paths easily available
+            imagePath: rt.image_path ?? null,
             scene: null,
             characters: [],
             parseStatus: 'ok' as const,
             parseWarnings: [],
             imageError: null,
+            messageId: rt.message_id ?? null,
           };
         });
       }
@@ -153,8 +161,7 @@
   }
 
   // ── Process a turn ──
-  async function handleSubmit(event: CustomEvent<string>) {
-    const userInput = event.detail;
+  async function handleSubmit(userInput: string) {
     if (!chatId) {
       lastError = 'No active chat. Please load or create a story first.';
       return;
@@ -189,6 +196,7 @@
         parseStatus: result.parse_status as 'ok' | 'partial' | 'fallback',
         parseWarnings: result.parse_warnings,
         imageError: result.image_generation_error,
+        messageId: result.assistant_message_id ?? null,
       };
 
       turns = [...turns, displayTurn];
@@ -228,12 +236,66 @@
     }
   }
 
-  function handleCharacterClick(event: CustomEvent<CharacterInScene>) {
-    dispatch('characterClick', event.detail);
+  function handleCharacterClick(char: CharacterInScene) {
+    oncharacterclick?.(char);
   }
 
-  function handleHeaderCharacterClick(event: CustomEvent<{ char: CharacterInScene; profile?: CharacterProfile }>) {
-    dispatch('characterClick', event.detail);
+  function handleHeaderCharacterClick(data: { char: CharacterInScene; profile?: CharacterProfile }) {
+    oncharacterclick?.(data);
+  }
+
+  /**
+   * Build a concise visual scene description from structured scene data.
+   * Falls back to the raw story text if scene data is unavailable.
+   */
+  function buildScenePrompt(scene: SceneJson | null, fallback: string): string {
+    if (!scene) return fallback;
+    const parts: string[] = [];
+    if (scene.location) parts.push(scene.location);
+    if (scene.location_type) parts.push(scene.location_type);
+    if (scene.time_of_day) parts.push(scene.time_of_day);
+    if (scene.lighting) parts.push(scene.lighting + ' lighting');
+    if (scene.weather && scene.weather !== 'clear' && scene.weather !== 'none') parts.push(scene.weather);
+    if (scene.mood) parts.push(scene.mood + ' atmosphere');
+    return parts.length > 0 ? parts.join(', ') : fallback;
+  }
+
+  async function handleIllustrate(data: { storyText: string; messageId: number | null; turnNumber: number }) {
+    const { storyText, messageId, turnNumber } = data;
+    if (generatingImageForTurn !== null) return; // already generating
+
+    generatingImageForTurn = turnNumber;
+    lastError = null;
+
+    try {
+      // Build a concise visual prompt from scene data rather than passing the full narrative
+      const turn = turns.find(t => t.turnNumber === turnNumber);
+      const scenePrompt = buildScenePrompt(turn?.scene ?? null, storyText);
+      const imagePath = await generateSceneImageForTurn(scenePrompt, storyId ?? undefined);
+
+      // Update the turn in the array with the new image path
+      turns = turns.map(t =>
+        t.turnNumber === turnNumber ? { ...t, imagePath, imageError: null } : t
+      );
+
+      // Persist to DB if we have the message_id
+      if (messageId !== null && chatId !== null) {
+        await saveImageForMessage(messageId, chatId, imagePath).catch(e =>
+          console.warn('[StoryView] Failed to persist image to DB:', e)
+        );
+      }
+
+      // Update story thumbnail with the latest generated image
+      updateThumbnail(imagePath);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error('[StoryView] Illustrate scene failed:', errMsg);
+      turns = turns.map(t =>
+        t.turnNumber === turnNumber ? { ...t, imageError: errMsg } : t
+      );
+    } finally {
+      generatingImageForTurn = null;
+    }
   }
 </script>
 
@@ -246,8 +308,8 @@
     {compressionInfo}
     {storyTitle}
     {totalTurns}
-    on:characterClick={handleHeaderCharacterClick}
-    on:openSettings
+    oncharacterclick={handleHeaderCharacterClick}
+    onopenesettings={onopenesettings}
   />
 
   <!-- Scrollable Story Area -->
@@ -303,7 +365,7 @@
             </span>
             <button
               class="compress-preview-btn"
-              on:click={() => dispatch('showCompressedHistory', compressionInfo?.compressed_summary_preview)}
+              on:click={() => onshowcompressedhistory?.(compressionInfo?.compressed_summary_preview)}
               title="View summary"
             >
               View
@@ -323,7 +385,10 @@
             parseWarnings={turn.parseWarnings}
             imageError={turn.imageError}
             isLatestTurn={i === turns.length - 1}
-            on:characterClick={handleCharacterClick}
+            messageId={turn.messageId}
+            isGeneratingImage={generatingImageForTurn === turn.turnNumber}
+            oncharacterclick={handleCharacterClick}
+            onillustratescene={handleIllustrate}
           />
         {/each}
       </div>
@@ -356,7 +421,7 @@
     {isGeneratingImage}
     disabled={!chatId}
     placeholder={isEmpty ? 'Begin your adventure...' : 'What do you do next?'}
-    on:submit={handleSubmit}
+    onsubmit={handleSubmit}
   />
 
   <!-- Bottom Token Meter (full, only when data available) -->

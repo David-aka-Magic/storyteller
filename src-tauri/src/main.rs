@@ -3,15 +3,13 @@
     windows_subsystem = "windows"
 )]
 
-mod comfyui_api;
 mod commands;
-mod context_compression;
 mod config;
-mod llm_parser;
-mod mask_generator;
+mod image_gen;
 mod models;
 mod services;
 mod state;
+mod text_gen;
 
 use config::{AppConfig, ConfigState};
 use services::ServiceManager;
@@ -54,69 +52,7 @@ fn main() {
             if auto_start {
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(async {
-                        // Small delay to let app fully initialize
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        
-                        // Start Ollama if not running
-                        if !ServiceManager::is_ollama_running().await {
-                            println!("[Startup] Starting Ollama...");
-                            let _ = std::process::Command::new("ollama")
-                                .arg("serve")
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                        } else {
-                            println!("[Startup] Ollama already running");
-                        }
-
-                        // Start SD if not running
-                        if !ServiceManager::is_sd_running().await {
-                            println!("[Startup] Starting Stable Diffusion...");
-                            
-                            let venv_python = sd_path.join("venv").join("Scripts").join("python.exe");
-                            let launch_py = sd_path.join("launch.py");
-                            
-                            println!("[Startup] Checking venv at: {:?}", venv_python);
-                            println!("[Startup] Checking launch.py at: {:?}", launch_py);
-                            
-                            if venv_python.exists() && launch_py.exists() {
-                                println!("[Startup] Starting SD via venv Python...");
-                                match std::process::Command::new(&venv_python)
-                                    .arg(&launch_py)
-                                    .arg("--api")
-                                    .arg("--xformers")
-                                    .arg("--skip-python-version-check")
-                                    .current_dir(&sd_path)
-                                    .stdin(std::process::Stdio::null())
-                                    .stdout(std::process::Stdio::null())
-                                    .stderr(std::process::Stdio::null())
-                                    .spawn() 
-                                {
-                                    Ok(_) => println!("[Startup] SD process started successfully"),
-                                    Err(e) => println!("[Startup] Failed to start SD: {}", e),
-                                }
-                            } else {
-                                let webui_bat = sd_path.join("webui-user.bat");
-                                println!("[Startup] Venv not found, trying batch file at: {:?}", webui_bat);
-                                
-                                if webui_bat.exists() {
-                                    match std::process::Command::new("cmd")
-                                        .args(["/c", "start", "StableDiffusion", "cmd", "/k", "webui-user.bat"])
-                                        .current_dir(&sd_path)
-                                        .spawn()
-                                    {
-                                        Ok(_) => println!("[Startup] SD batch file started in new window"),
-                                        Err(e) => println!("[Startup] Failed to start SD batch: {}", e),
-                                    }
-                                } else {
-                                    println!("[Startup] ERROR: No valid SD startup method found!");
-                                }
-                            }
-                        } else {
-                            println!("[Startup] Stable Diffusion already running");
-                        }
-                    });
+                    rt.block_on(services::startup::auto_start_services(sd_path));
                 });
             }
 
@@ -129,28 +65,23 @@ fn main() {
             commands::chat::load_chat,
             commands::chat::delete_chats,
             commands::chat::clear_history,
-            commands::chat::generate_story,
-            commands::chat::regenerate_story,
             commands::chat::set_chat_character,
-            // Story commands (legacy — kept for backward compatibility)
+            commands::chat::save_image_for_message,
+            // Story commands
             commands::story::save_story_premise,
             commands::story::get_story_list,
             commands::story::delete_stories,
-            // Story Manager commands (full session lifecycle)
-            commands::story_manager::create_story,
-            commands::story_manager::load_story,
-            commands::story_manager::save_story_state,
-            commands::story_manager::list_stories,
-            commands::story_manager::delete_story,
-            commands::story_manager::export_story,
+            commands::story::create_story,
+            commands::story::load_story,
+            commands::story::save_story_state,
+            commands::story::list_stories,
+            commands::story::delete_story,
+            commands::story::export_story,
             // Character & Image commands
-            commands::images::save_character,
-            commands::images::delete_character,
-            commands::images::get_character_list,
-            commands::images::generate_image,
-            commands::images::generate_image_variation,
-            commands::images::generate_character_portrait,
-            commands::images::diagnose_sd_connection,
+            image_gen::sd_webui::generate_image,
+            image_gen::sd_webui::generate_image_variation,
+            image_gen::sd_webui::generate_character_portrait,
+            image_gen::sd_webui::diagnose_sd_connection,
             // Service commands
             services::check_services_status,
             services::start_services,
@@ -160,40 +91,45 @@ fn main() {
             config::update_config,
             config::set_sd_path,
             // LLM Parser commands
-            llm_parser::parse_story_turn,
-            llm_parser::get_story_text,
-            llm_parser::get_character_names,
-            llm_parser::check_generation_flags,
+            text_gen::parser::parse_story_turn,
+            text_gen::parser::get_story_text,
+            text_gen::parser::get_character_names,
+            text_gen::parser::check_generation_flags,
             // Mask Generator commands
-            mask_generator::generate_color_mask,
-            mask_generator::save_mask_image,
+            image_gen::masks::generate_color_mask,
+            image_gen::masks::save_mask_image,
             // ComfyUI API commands
-            comfyui_api::check_comfyui_status,
-            comfyui_api::upload_to_comfyui,
-            comfyui_api::queue_comfyui_prompt,
-            comfyui_api::poll_comfyui_result,
-            comfyui_api::download_comfyui_image,
-            comfyui_api::generate_comfyui_scene,
-            comfyui_api::read_file_bytes,
-            comfyui_api::read_file_base64,
+            image_gen::comfyui::check_comfyui_status,
+            image_gen::comfyui::upload_to_comfyui,
+            image_gen::comfyui::queue_comfyui_prompt,
+            image_gen::comfyui::poll_comfyui_result,
+            image_gen::comfyui::download_comfyui_image,
+            image_gen::comfyui::generate_comfyui_scene,
+            image_gen::comfyui::read_file_bytes,
+            image_gen::comfyui::read_file_base64,
             // Character commands
             commands::character::add_character,
             commands::character::update_character,
             commands::character::delete_character_by_id,
+            commands::character::delete_character,
             commands::character::get_character_by_name,
             commands::character::get_character_by_id,
             commands::character::list_characters_for_story,
+            commands::character::list_all_characters,
             commands::character::search_characters,
             commands::character::set_character_master_image,
             commands::character::lookup_scene_characters,
             commands::character::link_character_to_story,
+            commands::character::add_character_to_story,
+            commands::character::remove_character_from_story,
             // Master Portrait commands
-            commands::master_portrait::generate_master_portrait,
-            commands::master_portrait::save_master_portrait,
-            commands::master_portrait::preview_portrait_prompt,
+            image_gen::portrait::generate_master_portrait,
+            image_gen::portrait::save_master_portrait,
+            image_gen::portrait::preview_portrait_prompt,
             // Orchestrator (unified story turn pipeline)
-            commands::orchestrator::process_story_turn,
-            commands::orchestrator::generate_scene_image_for_turn,
+            text_gen::orchestrator::process_story_turn,
+            text_gen::orchestrator::generate_scene_image_for_turn,
+            text_gen::orchestrator::get_compression_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,7 +18,8 @@
     - onclose: () => void
 -->
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
+  import { generateMasterPortrait, generateCharacterPortrait, saveMasterPortrait } from '$lib/api/image-gen';
+  import { updateCharacter, addCharacter } from '$lib/api/character';
   import type { CharacterProfile } from '../lib/types';
 
   // ── Svelte 5 props ──
@@ -166,26 +167,18 @@
     // Try ComfyUI first (batch of 4), then fall back to SD WebUI (single image)
     // No pre-check — just try and let the actual request tell us if it works
     try {
-      const result = await invoke<{
-        images_base64: string[];
-        image_paths: string[];
-        prompt_used: string;
-        seed: number;
-        prompt_id: string;
-      }>('generate_master_portrait', {
-        request: {
-          name: form.name,
-          age: form.age || null,
-          gender: form.gender || null,
-          skin_tone: form.skin_tone || null,
-          hair_color: form.hair_color || null,
-          hair_style: form.hair_style || null,
-          body_type: form.body_type || null,
-          physical_features: form.additional_notes || null,
-          art_style: form.art_style || null,
-          custom_prompt: showPromptEditor ? form.sd_prompt : null,
-          seed: null,
-        },
+      const result = await generateMasterPortrait({
+        name: form.name,
+        age: form.age || null,
+        gender: form.gender || null,
+        skin_tone: form.skin_tone || null,
+        hair_color: form.hair_color || null,
+        hair_style: form.hair_style || null,
+        body_type: form.body_type || null,
+        physical_features: form.additional_notes || null,
+        art_style: form.art_style || null,
+        custom_prompt: showPromptEditor ? form.sd_prompt : null,
+        seed: null,
       });
 
       generatedImages = result.images_base64;
@@ -206,10 +199,7 @@
   // ── Single-image generation via SD WebUI API ──
   async function fallbackSingleGenerate() {
     try {
-      const [base64, seedStr] = (await invoke('generate_character_portrait', {
-        prompt: form.sd_prompt,
-        style: form.art_style,
-      })) as [string, string];
+      const [base64, seedStr] = (await generateCharacterPortrait(form.sd_prompt, form.art_style) as unknown) as [string, string];
 
       generatedImages = [base64];
       generatedPaths = [];
@@ -241,26 +231,22 @@
   
         if (form.id && form.id > 0) {
           // Existing character — update in place
-          await invoke('update_character', { character: form });
+          await updateCharacter(form);
           characterId = form.id;
         } else {
           // New character — insert and get real ID back
-          characterId = await invoke<number>('add_character', {
-            character: { ...form, id: 0 }
-          });
+          characterId = await addCharacter({ ...form, id: 0 });
           form.id = characterId;
         }
-  
+
         // If user selected a ComfyUI image, save it as the master reference
         if (selectedIndex >= 0 && generatedPaths.length > 0 && characterId > 0) {
           try {
-            const masterPath = await invoke<string>('save_master_portrait', {
-              request: {
-                character_id: characterId,
-                selected_index: selectedIndex,
-                image_paths: generatedPaths,
-                character_name: form.name,
-              },
+            const masterPath = await saveMasterPortrait({
+              character_id: characterId,
+              selected_index: selectedIndex,
+              image_paths: generatedPaths,
+              character_name: form.name,
             });
             form.master_image_path = masterPath;
             console.log('[CharacterModal] Master portrait saved:', masterPath);

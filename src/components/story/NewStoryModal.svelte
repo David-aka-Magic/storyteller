@@ -10,14 +10,14 @@
     'close'  → dismiss modal
 -->
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import type { CharacterProfile } from '../../lib/types';
 
   export let show: boolean = false;
   /** All available characters the user can pick from */
   export let availableCharacters: CharacterProfile[] = [];
 
-  const dispatch = createEventDispatcher();
+  export let oncreate: ((data: { title: string; description: string; characterIds: number[] }) => void) | undefined = undefined;
+  export let onclose: (() => void) | undefined = undefined;
 
   // ── Wizard State ──
   let step = 1;
@@ -60,7 +60,7 @@
 
   function handleCreate() {
     if (!step1Valid) return;
-    dispatch('create', {
+    oncreate?.({
       title: title.trim(),
       description: description.trim(),
       characterIds: Array.from(selectedCharIds),
@@ -68,7 +68,7 @@
   }
 
   function close() {
-    dispatch('close');
+    onclose?.();
   }
 
   function handleKeydown(e: KeyboardEvent) {

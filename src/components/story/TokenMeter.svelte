@@ -4,7 +4,7 @@
   Shows how close the context is to the compression threshold.
 -->
 <script lang="ts">
-  import type { OrchestratorCompressionInfo } from '$lib/orchestrator-types';
+  import type { OrchestratorCompressionInfo } from '$lib/types';
 
   export let info: OrchestratorCompressionInfo | null = null;
   export let compact: boolean = false;

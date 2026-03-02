@@ -171,6 +171,36 @@ impl OllamaState {
             .execute(pool).await.ok();
 
         // =====================================================================
+        // STORY_CHARACTERS junction table (many-to-many: character <-> story)
+        // A character can belong to multiple stories; a story can have many characters.
+        // CASCADE on both FKs: deleting a story removes its junction rows (not the
+        // characters themselves). Deleting a character removes all its junction rows.
+        // =====================================================================
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS story_characters (
+                story_id     INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                added_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (story_id, character_id),
+                FOREIGN KEY(story_id)     REFERENCES story_premises(id) ON DELETE CASCADE,
+                FOREIGN KEY(character_id) REFERENCES characters(id)     ON DELETE CASCADE
+            )"
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create story_characters table");
+
+        // Migrate existing data: populate junction table from characters.story_id
+        // INSERT OR IGNORE is safe to run on every startup (PK prevents duplicates).
+        sqlx::query(
+            "INSERT OR IGNORE INTO story_characters (story_id, character_id)
+             SELECT story_id, id FROM characters WHERE story_id IS NOT NULL"
+        )
+        .execute(pool)
+        .await
+        .ok();
+
+        // =====================================================================
         // INDEXES for fast lookups
         // =====================================================================
         
@@ -186,6 +216,12 @@ impl OllamaState {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_characters_story_name ON characters(story_id, name)")
             .execute(pool).await.ok();
 
+        // Indexes for story_characters junction table
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sc_story ON story_characters(story_id)")
+            .execute(pool).await.ok();
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sc_character ON story_characters(character_id)")
+            .execute(pool).await.ok();
+
         // Index for chat lookups
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)")
             .execute(pool).await.ok();
@@ -198,6 +234,6 @@ impl OllamaState {
         // STORY MANAGER MIGRATIONS
         // =====================================================================
         // Adds session-tracking columns to story_premises (safe to run repeatedly)
-        crate::commands::story_manager::run_migrations(pool).await;
+        crate::commands::story::run_migrations(pool).await;
     }
 }

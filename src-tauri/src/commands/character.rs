@@ -1,7 +1,11 @@
 // src-tauri/src/commands/character.rs
 //
 // Character Database Commands for StoryEngine
-// Provides CRUD operations and exact name matching for LLM integration
+// Provides CRUD operations and exact name matching for LLM integration.
+//
+// Characters use a many-to-many relationship with stories via the
+// `story_characters` junction table. A character can belong to multiple
+// stories and survives story deletion (only junction rows are removed).
 
 use tauri::State;
 use crate::state::OllamaState;
@@ -9,27 +13,54 @@ use crate::models::{CharacterProfile, CharacterLookup, SceneCharacter};
 use sqlx::Row;
 
 // ============================================================================
+// SHARED HELPER: map a DB row to CharacterProfile
+// ============================================================================
+
+fn row_to_profile(r: &sqlx::sqlite::SqliteRow) -> CharacterProfile {
+    CharacterProfile {
+        id: r.get("id"),
+        story_id: r.get("story_id"),
+        name: r.get("name"),
+        age: r.get("age"),
+        gender: r.get("gender"),
+        skin_tone: r.get("skin_tone"),
+        hair_style: r.get("hair_style"),
+        hair_color: r.get("hair_color"),
+        body_type: r.get("body_type"),
+        personality: r.get("personality"),
+        additional_notes: r.get("additional_notes"),
+        default_clothing: r.get("default_clothing"),
+        sd_prompt: r.get("sd_prompt"),
+        image: r.get("image"),
+        master_image_path: r.get("master_image_path"),
+        seed: r.get("seed"),
+        art_style: r.get("art_style"),
+    }
+}
+
+// ============================================================================
 // CORE CRUD COMMANDS
 // ============================================================================
 
-/// Add a new character to the database
+/// Add a new character to the database.
+/// The character is not linked to any story; call `add_character_to_story`
+/// afterward to associate it with one or more stories.
 #[tauri::command]
 pub async fn add_character(
     character: CharacterProfile,
     state: State<'_, OllamaState>,
 ) -> Result<i64, String> {
     let art_style = character.art_style.clone().unwrap_or_else(|| "Realistic".to_string());
-    
+
     let result = sqlx::query(
         r#"
         INSERT INTO characters (
-            story_id, name, age, gender, skin_tone, hair_style, hair_color,
+            name, age, gender, skin_tone, hair_style, hair_color,
             body_type, personality, additional_notes, default_clothing,
             sd_prompt, image, master_image_path, seed, art_style
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#
     )
-    .bind(&character.story_id)
     .bind(&character.name)
     .bind(&character.age)
     .bind(&character.gender)
@@ -52,8 +83,8 @@ pub async fn add_character(
     Ok(result.last_insert_rowid())
 }
 
-/// Get a character by exact name match (for LLM integration)
-/// This is the key function for matching "name": "David" from your Ollama output
+/// Get a character by exact name match (for LLM integration).
+/// When story_id is provided, restricts to characters linked to that story.
 #[tauri::command]
 pub async fn get_character_by_name(
     name: String,
@@ -61,14 +92,15 @@ pub async fn get_character_by_name(
     state: State<'_, OllamaState>,
 ) -> Result<Option<CharacterProfile>, String> {
     let row = if let Some(sid) = story_id {
-        // Look for character in specific story first
         sqlx::query(
             r#"
-            SELECT id, story_id, name, age, gender, skin_tone, hair_style, 
-                   hair_color, body_type, personality, additional_notes, 
-                   default_clothing, sd_prompt, image, master_image_path, seed, art_style
-            FROM characters 
-            WHERE name = ? AND story_id = ?
+            SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
+                   c.hair_color, c.body_type, c.personality, c.additional_notes,
+                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+            FROM characters c
+            INNER JOIN story_characters sc ON sc.character_id = c.id
+            WHERE c.name = ? AND sc.story_id = ?
+            LIMIT 1
             "#
         )
         .bind(&name)
@@ -77,13 +109,12 @@ pub async fn get_character_by_name(
         .await
         .map_err(|e| e.to_string())?
     } else {
-        // Global search (returns first match)
         sqlx::query(
             r#"
-            SELECT id, story_id, name, age, gender, skin_tone, hair_style, 
-                   hair_color, body_type, personality, additional_notes, 
+            SELECT id, story_id, name, age, gender, skin_tone, hair_style,
+                   hair_color, body_type, personality, additional_notes,
                    default_clothing, sd_prompt, image, master_image_path, seed, art_style
-            FROM characters 
+            FROM characters
             WHERE name = ?
             LIMIT 1
             "#
@@ -94,28 +125,10 @@ pub async fn get_character_by_name(
         .map_err(|e| e.to_string())?
     };
 
-    Ok(row.map(|r| CharacterProfile {
-        id: r.get("id"),
-        story_id: r.get("story_id"),
-        name: r.get("name"),
-        age: r.get("age"),
-        gender: r.get("gender"),
-        skin_tone: r.get("skin_tone"),
-        hair_style: r.get("hair_style"),
-        hair_color: r.get("hair_color"),
-        body_type: r.get("body_type"),
-        personality: r.get("personality"),
-        additional_notes: r.get("additional_notes"),
-        default_clothing: r.get("default_clothing"),
-        sd_prompt: r.get("sd_prompt"),
-        image: r.get("image"),
-        master_image_path: r.get("master_image_path"),
-        seed: r.get("seed"),
-        art_style: r.get("art_style"),
-    }))
+    Ok(row.as_ref().map(row_to_profile))
 }
 
-/// Get a character by ID
+/// Get a character by ID.
 #[tauri::command]
 pub async fn get_character_by_id(
     id: i64,
@@ -123,10 +136,10 @@ pub async fn get_character_by_id(
 ) -> Result<Option<CharacterProfile>, String> {
     let row = sqlx::query(
         r#"
-        SELECT id, story_id, name, age, gender, skin_tone, hair_style, 
-               hair_color, body_type, personality, additional_notes, 
+        SELECT id, story_id, name, age, gender, skin_tone, hair_style,
+               hair_color, body_type, personality, additional_notes,
                default_clothing, sd_prompt, image, master_image_path, seed, art_style
-        FROM characters 
+        FROM characters
         WHERE id = ?
         "#
     )
@@ -135,28 +148,10 @@ pub async fn get_character_by_id(
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(row.map(|r| CharacterProfile {
-        id: r.get("id"),
-        story_id: r.get("story_id"),
-        name: r.get("name"),
-        age: r.get("age"),
-        gender: r.get("gender"),
-        skin_tone: r.get("skin_tone"),
-        hair_style: r.get("hair_style"),
-        hair_color: r.get("hair_color"),
-        body_type: r.get("body_type"),
-        personality: r.get("personality"),
-        additional_notes: r.get("additional_notes"),
-        default_clothing: r.get("default_clothing"),
-        sd_prompt: r.get("sd_prompt"),
-        image: r.get("image"),
-        master_image_path: r.get("master_image_path"),
-        seed: r.get("seed"),
-        art_style: r.get("art_style"),
-    }))
+    Ok(row.as_ref().map(row_to_profile))
 }
 
-/// Update an existing character
+/// Update an existing character's fields (does not affect story membership).
 #[tauri::command]
 pub async fn update_character(
     character: CharacterProfile,
@@ -167,7 +162,6 @@ pub async fn update_character(
     sqlx::query(
         r#"
         UPDATE characters SET
-            story_id = ?,
             name = ?,
             age = ?,
             gender = ?,
@@ -187,7 +181,6 @@ pub async fn update_character(
         WHERE id = ?
         "#
     )
-    .bind(&character.story_id)
     .bind(&character.name)
     .bind(&character.age)
     .bind(&character.gender)
@@ -211,7 +204,7 @@ pub async fn update_character(
     Ok(())
 }
 
-/// Delete a character by ID
+/// Delete a character by ID (removes the character and all its story links).
 #[tauri::command]
 pub async fn delete_character_by_id(
     id: i64,
@@ -226,7 +219,17 @@ pub async fn delete_character_by_id(
     Ok(())
 }
 
-/// List all characters for a specific story (or all if story_id is None)
+/// Alias for delete_character_by_id — kept for frontend callers using the shorter name.
+#[tauri::command]
+pub async fn delete_character(
+    id: i64,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    delete_character_by_id(id, state).await
+}
+
+/// List characters linked to a specific story via the junction table.
+/// If story_id is None, returns ALL characters in the database.
 #[tauri::command]
 pub async fn list_characters_for_story(
     story_id: Option<i64>,
@@ -235,12 +238,13 @@ pub async fn list_characters_for_story(
     let rows = if let Some(sid) = story_id {
         sqlx::query(
             r#"
-            SELECT id, story_id, name, age, gender, skin_tone, hair_style, 
-                   hair_color, body_type, personality, additional_notes, 
-                   default_clothing, sd_prompt, image, master_image_path, seed, art_style
-            FROM characters 
-            WHERE story_id = ?
-            ORDER BY name ASC
+            SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
+                   c.hair_color, c.body_type, c.personality, c.additional_notes,
+                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+            FROM characters c
+            INNER JOIN story_characters sc ON sc.character_id = c.id
+            WHERE sc.story_id = ?
+            ORDER BY c.name ASC
             "#
         )
         .bind(sid)
@@ -250,10 +254,10 @@ pub async fn list_characters_for_story(
     } else {
         sqlx::query(
             r#"
-            SELECT id, story_id, name, age, gender, skin_tone, hair_style, 
-                   hair_color, body_type, personality, additional_notes, 
+            SELECT id, story_id, name, age, gender, skin_tone, hair_style,
+                   hair_color, body_type, personality, additional_notes,
                    default_clothing, sd_prompt, image, master_image_path, seed, art_style
-            FROM characters 
+            FROM characters
             ORDER BY name ASC
             "#
         )
@@ -262,36 +266,93 @@ pub async fn list_characters_for_story(
         .map_err(|e| e.to_string())?
     };
 
-    let characters = rows.iter().map(|r| CharacterProfile {
-        id: r.get("id"),
-        story_id: r.get("story_id"),
-        name: r.get("name"),
-        age: r.get("age"),
-        gender: r.get("gender"),
-        skin_tone: r.get("skin_tone"),
-        hair_style: r.get("hair_style"),
-        hair_color: r.get("hair_color"),
-        body_type: r.get("body_type"),
-        personality: r.get("personality"),
-        additional_notes: r.get("additional_notes"),
-        default_clothing: r.get("default_clothing"),
-        sd_prompt: r.get("sd_prompt"),
-        image: r.get("image"),
-        master_image_path: r.get("master_image_path"),
-        seed: r.get("seed"),
-        art_style: r.get("art_style"),
-    }).collect();
+    Ok(rows.iter().map(row_to_profile).collect())
+}
 
-    Ok(characters)
+/// List ALL characters in the database (not filtered by story).
+/// Used by the "Add Existing Character" picker.
+#[tauri::command]
+pub async fn list_all_characters(
+    state: State<'_, OllamaState>,
+) -> Result<Vec<CharacterProfile>, String> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, story_id, name, age, gender, skin_tone, hair_style,
+               hair_color, body_type, personality, additional_notes,
+               default_clothing, sd_prompt, image, master_image_path, seed, art_style
+        FROM characters
+        ORDER BY name ASC
+        "#
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.iter().map(row_to_profile).collect())
+}
+
+// ============================================================================
+// STORY MEMBERSHIP COMMANDS
+// ============================================================================
+
+/// Add a character to a story via the junction table.
+/// Safe to call multiple times (INSERT OR IGNORE).
+#[tauri::command]
+pub async fn add_character_to_story(
+    character_id: i64,
+    story_id: i64,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO story_characters (story_id, character_id) VALUES (?, ?)"
+    )
+    .bind(story_id)
+    .bind(character_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("Failed to add character to story: {}", e))?;
+
+    Ok(())
+}
+
+/// Remove a character from a story (deletes the junction row only).
+/// The character itself is NOT deleted.
+#[tauri::command]
+pub async fn remove_character_from_story(
+    character_id: i64,
+    story_id: i64,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM story_characters WHERE story_id = ? AND character_id = ?"
+    )
+    .bind(story_id)
+    .bind(character_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("Failed to remove character from story: {}", e))?;
+
+    Ok(())
+}
+
+/// Link a character to a story (alias for add_character_to_story).
+/// Kept for backward compatibility with older frontend code.
+#[tauri::command]
+pub async fn link_character_to_story(
+    character_id: i64,
+    story_id: i64,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    add_character_to_story(character_id, story_id, state).await
 }
 
 // ============================================================================
 // LLM INTEGRATION COMMANDS
 // ============================================================================
 
-/// Batch lookup characters by names (for processing LLM scene output)
-/// Takes the characters_in_scene array from your Ollama model and returns
-/// matched characters with their master image paths for IP-Adapter
+/// Batch lookup characters by names (for processing LLM scene output).
+/// When story_id is provided, restricts search to characters in that story,
+/// with a global fallback if a name isn't found in the story scope.
 #[tauri::command]
 pub async fn lookup_scene_characters(
     scene_characters: Vec<SceneCharacter>,
@@ -299,28 +360,45 @@ pub async fn lookup_scene_characters(
     state: State<'_, OllamaState>,
 ) -> Result<Vec<(SceneCharacter, Option<CharacterLookup>)>, String> {
     let mut results = Vec::new();
-    
+
     for scene_char in scene_characters {
         let row = if let Some(sid) = story_id {
-            sqlx::query(
+            // Story-scoped lookup via junction table
+            let r = sqlx::query(
                 r#"
-                SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
-                FROM characters
-                WHERE name = ? AND story_id = ?
+                SELECT c.id, c.name, c.master_image_path, c.sd_prompt, c.default_clothing, c.art_style, c.gender
+                FROM characters c
+                INNER JOIN story_characters sc ON sc.character_id = c.id
+                WHERE c.name = ? AND sc.story_id = ?
+                LIMIT 1
                 "#
             )
             .bind(&scene_char.name)
             .bind(sid)
             .fetch_optional(&state.db)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+
+            if r.is_none() {
+                // Fallback to global search
+                sqlx::query(
+                    r#"
+                    SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
+                    FROM characters WHERE name = ? LIMIT 1
+                    "#
+                )
+                .bind(&scene_char.name)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| e.to_string())?
+            } else {
+                r
+            }
         } else {
             sqlx::query(
                 r#"
                 SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
-                FROM characters
-                WHERE name = ?
-                LIMIT 1
+                FROM characters WHERE name = ? LIMIT 1
                 "#
             )
             .bind(&scene_char.name)
@@ -328,7 +406,7 @@ pub async fn lookup_scene_characters(
             .await
             .map_err(|e| e.to_string())?
         };
-        
+
         let lookup = row.map(|r| CharacterLookup {
             id: r.get("id"),
             name: r.get("name"),
@@ -338,15 +416,14 @@ pub async fn lookup_scene_characters(
             art_style: r.get("art_style"),
             gender: r.get("gender"),
         });
-        
+
         results.push((scene_char, lookup));
     }
-    
+
     Ok(results)
 }
 
-/// Update the master reference image path for a character
-/// Call this after generating/selecting a reference image for IP-Adapter
+/// Update the master reference image path for a character.
 #[tauri::command]
 pub async fn set_character_master_image(
     id: i64,
@@ -365,7 +442,8 @@ pub async fn set_character_master_image(
     Ok(())
 }
 
-/// Search characters by partial name match (for autocomplete/search UI)
+/// Search characters by partial name match (for autocomplete/search UI).
+/// When story_id is provided, restricts to characters in that story.
 #[tauri::command]
 pub async fn search_characters(
     query: String,
@@ -375,16 +453,17 @@ pub async fn search_characters(
 ) -> Result<Vec<CharacterProfile>, String> {
     let search_pattern = format!("%{}%", query);
     let max_results = limit.unwrap_or(10);
-    
+
     let rows = if let Some(sid) = story_id {
         sqlx::query(
             r#"
-            SELECT id, story_id, name, age, gender, skin_tone, hair_style, 
-                   hair_color, body_type, personality, additional_notes, 
-                   default_clothing, sd_prompt, image, master_image_path, seed, art_style
-            FROM characters 
-            WHERE name LIKE ? AND story_id = ?
-            ORDER BY name ASC
+            SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
+                   c.hair_color, c.body_type, c.personality, c.additional_notes,
+                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+            FROM characters c
+            INNER JOIN story_characters sc ON sc.character_id = c.id
+            WHERE c.name LIKE ? AND sc.story_id = ?
+            ORDER BY c.name ASC
             LIMIT ?
             "#
         )
@@ -397,10 +476,10 @@ pub async fn search_characters(
     } else {
         sqlx::query(
             r#"
-            SELECT id, story_id, name, age, gender, skin_tone, hair_style, 
-                   hair_color, body_type, personality, additional_notes, 
+            SELECT id, story_id, name, age, gender, skin_tone, hair_style,
+                   hair_color, body_type, personality, additional_notes,
                    default_clothing, sd_prompt, image, master_image_path, seed, art_style
-            FROM characters 
+            FROM characters
             WHERE name LIKE ?
             ORDER BY name ASC
             LIMIT ?
@@ -413,43 +492,5 @@ pub async fn search_characters(
         .map_err(|e| e.to_string())?
     };
 
-    let characters = rows.iter().map(|r| CharacterProfile {
-        id: r.get("id"),
-        story_id: r.get("story_id"),
-        name: r.get("name"),
-        age: r.get("age"),
-        gender: r.get("gender"),
-        skin_tone: r.get("skin_tone"),
-        hair_style: r.get("hair_style"),
-        hair_color: r.get("hair_color"),
-        body_type: r.get("body_type"),
-        personality: r.get("personality"),
-        additional_notes: r.get("additional_notes"),
-        default_clothing: r.get("default_clothing"),
-        sd_prompt: r.get("sd_prompt"),
-        image: r.get("image"),
-        master_image_path: r.get("master_image_path"),
-        seed: r.get("seed"),
-        art_style: r.get("art_style"),
-    }).collect();
-
-    Ok(characters)
-}
-
-#[tauri::command]
-pub async fn link_character_to_story(
-    character_id: i64,
-    story_id: i64,
-    state: State<'_, OllamaState>,
-) -> Result<(), String> {
-    sqlx::query(
-        "UPDATE characters SET story_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-    )
-    .bind(story_id)
-    .bind(character_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Failed to link character to story: {}", e))?;
-
-    Ok(())
+    Ok(rows.iter().map(row_to_profile).collect())
 }

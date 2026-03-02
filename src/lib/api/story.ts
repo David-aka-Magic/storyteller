@@ -1,0 +1,54 @@
+// src/lib/api/story.ts — Tauri command wrappers for story operations
+import { invoke } from '@tauri-apps/api/core';
+import type { StorySession, StorySummary, ExportFormat, StoryPremise, CompressedHistory } from '$lib/types';
+
+export async function createStory(
+  title: string,
+  description: string,
+  initialCharacterIds?: number[]
+): Promise<number> {
+  return invoke('create_story', { title, description, initialCharacterIds: initialCharacterIds ?? null });
+}
+
+export async function loadStory(storyId: number): Promise<StorySession> {
+  return invoke('load_story', { storyId });
+}
+
+export async function saveStoryState(
+  storyId: number,
+  compressedHistory: CompressedHistory | null,
+  currentLocation: string | null,
+  thumbnailPath: string | null
+): Promise<void> {
+  return invoke('save_story_state', { storyId, compressedHistory, currentLocation, thumbnailPath });
+}
+
+export async function listStories(): Promise<StorySummary[]> {
+  return invoke('list_stories');
+}
+
+export async function deleteStory(storyId: number): Promise<void> {
+  return invoke('delete_story', { storyId });
+}
+
+export async function exportStory(storyId: number, format: ExportFormat = 'json'): Promise<string> {
+  return invoke('export_story', { storyId, format });
+}
+
+// ---- Legacy commands (pre-story-manager) ----
+
+export async function getStoryList(): Promise<StoryPremise[]> {
+  return invoke('get_story_list');
+}
+
+export async function saveStoryPremise(
+  title: string,
+  description: string,
+  id: number | null
+): Promise<number> {
+  return invoke('save_story_premise', { title, description, id });
+}
+
+export async function deleteStories(ids: number[]): Promise<void> {
+  return invoke('delete_stories', { ids });
+}

@@ -1,21 +1,25 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import type { SelectionState } from '../lib/types';
   export let x: number;
   export let y: number;
   export let chatId: number;
   export let selectionState: SelectionState;
 
-  const dispatch = createEventDispatcher();
+  export let onclose: (() => void) | undefined = undefined;
+  export let ondelete: ((chatId: number) => void) | undefined = undefined;
+  export let onselectall: (() => void) | undefined = undefined;
+  export let oncancelselection: (() => void) | undefined = undefined;
+  export let onstartselection: ((chatId: number) => void) | undefined = undefined;
+
   function handleKeydown(e: KeyboardEvent, action: () => void) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       action();
     }
   }
-  
+
   function handleContainerKey(e: KeyboardEvent) {
-    if (e.key === 'Escape') dispatch('close');
+    if (e.key === 'Escape') onclose?.();
   }
 </script>
 
@@ -28,40 +32,38 @@
   aria-label="Chat options"
   tabindex="-1"
 >
-  <div 
-    class="context-menu-item" 
-    on:click={() => dispatch('delete', chatId)}
-    on:keydown={(e) => handleKeydown(e, () => dispatch('delete', chatId))}
+  <div
+    class="context-menu-item"
+    on:click={() => ondelete?.(chatId)}
+    on:keydown={(e) => handleKeydown(e, () => ondelete?.(chatId))}
     tabindex="0" role="menuitem"
   >
     <span class="icon">🗑️</span> Delete Chat
   </div>
 
-  <div 
-    class="context-menu-item" 
-    on:click={() => dispatch('selectAll')}
-    on:keydown={(e) => handleKeydown(e, () => dispatch('selectAll'))}
+  <div
+    class="context-menu-item"
+    on:click={() => onselectall?.()}
+    on:keydown={(e) => handleKeydown(e, () => onselectall?.())}
     tabindex="0" role="menuitem"
   >
     <span class="icon">✓</span> Select All Chats
   </div>
 
   {#if selectionState.isSelecting}
-    <div 
-      class="context-menu-item" 
-      on:click={() => dispatch('cancelSelection')}
-      on:keydown={(e) => handleKeydown(e, () => dispatch('cancelSelection'))}
+    <div
+      class="context-menu-item"
+      on:click={() => oncancelselection?.()}
+      on:keydown={(e) => handleKeydown(e, () => oncancelselection?.())}
       tabindex="0" role="menuitem"
     >
       <span class="icon">✕</span> Cancel Selection
     </div>
   {:else}
-    <div 
-      class="context-menu-item" 
-      on:click={() => {
-        dispatch('startSelection', chatId);
-      }}
-      on:keydown={(e) => handleKeydown(e, () => dispatch('startSelection', chatId))}
+    <div
+      class="context-menu-item"
+      on:click={() => onstartselection?.(chatId)}
+      on:keydown={(e) => handleKeydown(e, () => onstartselection?.(chatId))}
       tabindex="0" role="menuitem"
     >
       <span class="icon">📁</span> Select Multiple
@@ -69,11 +71,11 @@
   {/if}
 
   <div class="context-menu-divider" role="separator"></div>
-  
-  <div 
-    class="context-menu-item" 
-    on:click={() => dispatch('close')}
-    on:keydown={(e) => handleKeydown(e, () => dispatch('close'))}
+
+  <div
+    class="context-menu-item"
+    on:click={() => onclose?.()}
+    on:keydown={(e) => handleKeydown(e, () => onclose?.())}
     tabindex="0" role="menuitem"
   >
     <span class="icon">✕</span> Close

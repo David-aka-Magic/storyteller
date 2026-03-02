@@ -10,17 +10,16 @@
     - Delete confirmation dialog
     - Loading state while fetching
 
-  Dispatches:
-    'loadStory'   → story_id (number)
-    'newStory'    → { title, description, characterIds }
-    'openSettings'
+  Callback props:
+    onloadstory(storyId: number)
+    onnewstory({ title, description, characterIds })
+    onopenesettings()
 -->
 <script lang="ts">
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { onMount } from 'svelte';
   import StoryCard from './StoryCard.svelte';
   import NewStoryModal from './NewStoryModal.svelte';
-  import type { StorySummary } from '$lib/story-manager-types';
-  import type { CharacterProfile } from '../../lib/types';
+  import type { StorySummary, CharacterProfile } from '$lib/types';
 
   import {
     stories,
@@ -32,7 +31,9 @@
 
   export let availableCharacters: CharacterProfile[] = [];
 
-  const dispatch = createEventDispatcher();
+  export let onloadstory: ((storyId: number) => void) | undefined = undefined;
+  export let onnewstory: ((data: { title: string; description: string; characterIds: number[] }) => void) | undefined = undefined;
+  export let onopenesettings: (() => void) | undefined = undefined;
 
   // ── Local State ──
   let showNewStoryModal = false;
@@ -46,12 +47,11 @@
   });
 
   // ── Handlers ──
-  function handleSelectStory(e: CustomEvent<number>) {
-    dispatch('loadStory', e.detail);
+  function handleSelectStory(storyId: number) {
+    onloadstory?.(storyId);
   }
 
-  function handleRequestDelete(e: CustomEvent<number>) {
-    const storyId = e.detail;
+  function handleRequestDelete(storyId: number) {
     const story = $stories.find(s => s.story_id === storyId);
     deleteConfirmTitle = story?.title ?? 'this story';
     deleteConfirmId = storyId;
@@ -69,9 +69,9 @@
     deleteConfirmId = null;
   }
 
-  function handleCreate(e: CustomEvent<{ title: string; description: string; characterIds: number[] }>) {
+  function handleCreate(data: { title: string; description: string; characterIds: number[] }) {
     showNewStoryModal = false;
-    dispatch('newStory', e.detail);
+    onnewstory?.(data);
   }
 </script>
 
@@ -155,8 +155,8 @@
         {#each $stories as story (story.story_id)}
           <StoryCard
             {story}
-            on:select={handleSelectStory}
-            on:delete={handleRequestDelete}
+            onselect={handleSelectStory}
+            ondelete={handleRequestDelete}
           />
         {/each}
       </div>
@@ -196,8 +196,8 @@
   <NewStoryModal
     show={showNewStoryModal}
     {availableCharacters}
-    on:create={handleCreate}
-    on:close={() => showNewStoryModal = false}
+    oncreate={handleCreate}
+    onclose={() => showNewStoryModal = false}
   />
 </div>
 
