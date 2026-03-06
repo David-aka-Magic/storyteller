@@ -21,6 +21,7 @@
   import { generateMasterPortrait, generateCharacterPortrait, saveMasterPortrait } from '$lib/api/image-gen';
   import { updateCharacter, addCharacter } from '$lib/api/character';
   import type { CharacterProfile } from '../lib/types';
+  import ImageLightbox from './shared/ImageLightbox.svelte';
 
   // ── Svelte 5 props ──
   let {
@@ -37,6 +38,7 @@
 
   // ── Generation state ──
   let isGenerating = $state(false);
+  let lightboxSrc = $state<string | null>(null);
   let generatedImages = $state<string[]>([]);       // base64 batch from ComfyUI
   let generatedPaths = $state<string[]>([]);         // file paths on disk
   let selectedIndex = $state(-1);                    // which of the 4 the user picked
@@ -57,14 +59,27 @@
     skin_tone: 'Fair',
     hair_style: 'Long, straight',
     hair_color: 'Black',
+    eye_color: '',
     body_type: 'Average',
-    personality: 'Brave and curious',
+    height_scale: 3,
+    weight_scale: 3,
+    personality: '',
     additional_notes: '',
     sd_prompt: '',
     image: undefined,
     seed: undefined,
     art_style: 'Realistic',
   });
+
+  const heightLabels = ['Very Short', 'Short', 'Average', 'Tall', 'Very Tall'];
+  const weightLabels = ['Very Slim', 'Slim', 'Average', 'Heavyset', 'Very Heavyset'];
+
+  function getHeightLabel(val: number): string {
+    return heightLabels[(val ?? 3) - 1] ?? 'Average';
+  }
+  function getWeightLabel(val: number): string {
+    return weightLabels[(val ?? 3) - 1] ?? 'Average';
+  }
 
   let form = $state<CharacterProfile>(getEmptyForm());
 
@@ -117,6 +132,18 @@
       parts.push(`${form.hair_color.toLowerCase()} hair`);
     }
 
+    if (form.eye_color) {
+      parts.push(`${form.eye_color.toLowerCase()} eyes`);
+    }
+
+    // Height from slider
+    const heightDesc = ['petite, short stature', 'short stature', '', 'tall', 'very tall, imposing stature'][(form.height_scale ?? 3) - 1];
+    if (heightDesc) parts.push(heightDesc);
+
+    // Build/Weight from slider
+    const weightDesc = ['very slim, thin body', 'slim body', '', 'heavyset, large body', 'very heavyset, large body'][(form.weight_scale ?? 3) - 1];
+    if (weightDesc) parts.push(weightDesc);
+
     if (form.body_type) {
       const bodyMap: Record<string, string> = {
         'Slim': 'slim body',
@@ -135,10 +162,6 @@
         const trimmed = feat.trim();
         if (trimmed) parts.push(trimmed.toLowerCase());
       }
-    }
-
-    if (form.personality) {
-      parts.push(`${form.personality.toLowerCase()} expression`);
     }
 
     parts.push('detailed face, looking at viewer');
@@ -174,7 +197,10 @@
         skin_tone: form.skin_tone || null,
         hair_color: form.hair_color || null,
         hair_style: form.hair_style || null,
+        eye_color: form.eye_color || null,
         body_type: form.body_type || null,
+        height_scale: form.height_scale ?? 3,
+        weight_scale: form.weight_scale ?? 3,
         physical_features: form.additional_notes || null,
         art_style: form.art_style || null,
         custom_prompt: showPromptEditor ? form.sd_prompt : null,
@@ -321,6 +347,11 @@
             <input id="char-hairstyle" type="text" bind:value={form.hair_style} oninput={generateSdPrompt} />
           </div>
           <div class="group">
+            <label for="char-eyes">Eye Color</label>
+            <input id="char-eyes" type="text" bind:value={form.eye_color} oninput={generateSdPrompt}
+              placeholder="e.g., Blue, Hazel, Dark brown" />
+          </div>
+          <div class="group">
             <label for="char-body">Body Type</label>
             <select id="char-body" bind:value={form.body_type} onchange={generateSdPrompt}>
               {#each bodyTypes as bt}
@@ -328,17 +359,49 @@
               {/each}
             </select>
           </div>
-          <div class="group">
-            <label for="char-personality">Vibe</label>
-            <input id="char-personality" type="text" bind:value={form.personality} oninput={generateSdPrompt} />
+        </div>
+
+        <!-- Height & Weight sliders -->
+        <div class="sliders-section">
+          <div class="slider-group">
+            <label>Height: <strong>{getHeightLabel(form.height_scale ?? 3)}</strong></label>
+            <input type="range" min="1" max="5" step="1"
+              bind:value={form.height_scale} oninput={generateSdPrompt} class="slider" />
+            <div class="slider-labels">
+              <span>Very Short</span>
+              <span>Average</span>
+              <span>Very Tall</span>
+            </div>
           </div>
+          <div class="slider-group">
+            <label>Build: <strong>{getWeightLabel(form.weight_scale ?? 3)}</strong></label>
+            <input type="range" min="1" max="5" step="1"
+              bind:value={form.weight_scale} oninput={generateSdPrompt} class="slider" />
+            <div class="slider-labels">
+              <span>Very Slim</span>
+              <span>Average</span>
+              <span>Very Heavy</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Personality / backstory -->
+        <div class="group full">
+          <label for="char-personality">Personality & Details</label>
+          <textarea
+            id="char-personality"
+            bind:value={form.personality}
+            rows="3"
+            placeholder="Describe their personality, backstory, quirks, motivations..."
+          ></textarea>
+          <small>Sent to the AI to shape how the character behaves in the story.</small>
         </div>
 
         <!-- Physical features / additional notes -->
         <div class="group full">
           <label for="char-features">Physical Features</label>
           <input id="char-features" type="text" bind:value={form.additional_notes} oninput={generateSdPrompt}
-            placeholder="e.g., warm brown eyes, short beard, scar on left cheek" />
+            placeholder="e.g., short beard, scar on left cheek, freckles" />
         </div>
 
         <!-- Prompt preview -->
@@ -400,6 +463,15 @@
                 {#if selectedIndex === i}
                   <span class="check-badge">✓</span>
                 {/if}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span
+                  class="expand-btn"
+                  onclick={(e) => { e.stopPropagation(); lightboxSrc = `data:image/png;base64,${img}`; }}
+                  onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); lightboxSrc = `data:image/png;base64,${img}`; } }}
+                  role="button"
+                  tabindex="0"
+                  title="View fullscreen"
+                >⛶</span>
               </button>
             {/each}
           </div>
@@ -414,13 +486,15 @@
 
         {:else if generatedImages.length === 1}
           <!-- Single image (fallback SD API) -->
-          <div class="image-preview">
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+          <div class="image-preview" onclick={() => lightboxSrc = `data:image/png;base64,${generatedImages[0]}`} role="button" tabindex="0">
             <img src="data:image/png;base64,{generatedImages[0]}" alt="Character Portrait" />
           </div>
 
         {:else if form.image}
           <!-- Existing image from DB -->
-          <div class="image-preview">
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+          <div class="image-preview" onclick={() => lightboxSrc = `data:image/png;base64,${form.image}`} role="button" tabindex="0">
             <img src="data:image/png;base64,{form.image}" alt="Character Portrait" />
           </div>
 
@@ -458,6 +532,14 @@
     </div>
   </div>
 </div>
+
+{#if lightboxSrc}
+  <ImageLightbox
+    src={lightboxSrc}
+    alt="Character Portrait"
+    onclose={() => lightboxSrc = null}
+  />
+{/if}
 {/if}
 
 <style>
@@ -518,6 +600,54 @@
   textarea { resize: vertical; }
   small { color: var(--text-secondary, #888); font-size: 0.8em; }
 
+  /* ── Sliders ── */
+  .sliders-section {
+    display: flex;
+    gap: 20px;
+    margin-top: 10px;
+  }
+  .slider-group {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .slider-group label {
+    font-size: 0.85em;
+    font-weight: bold;
+    color: var(--text-secondary, #666);
+  }
+  .slider-group label strong {
+    color: var(--accent, #4a9eff);
+  }
+  .slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-tertiary, #21262d);
+    outline: none;
+    padding: 0;
+    border: none;
+  }
+  .slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent, #4a9eff);
+    cursor: pointer;
+    border: 2px solid var(--bg-primary, #0d1117);
+  }
+  .slider-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.7em;
+    color: var(--text-muted, #6e7681);
+  }
+
   /* ── Prompt section ── */
   .prompt-section { border-top: 1px solid var(--border-secondary, #eee); padding-top: 10px; }
   .prompt-header { display: flex; justify-content: space-between; align-items: center; }
@@ -543,6 +673,9 @@
   .style-label { font-size: 0.85em; font-weight: bold; color: var(--text-secondary, #666); }
   .style-dropdown { width: 100%; }
 
+  .image-preview {
+    cursor: pointer;
+  }
   .image-preview img {
     width: 100%; border-radius: 8px;
   }
@@ -581,6 +714,24 @@
     box-shadow: 0 0 8px rgba(74, 158, 255, 0.3);
   }
   .gallery-item img { width: 100%; height: auto; display: block; }
+
+  .expand-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: rgba(0, 0, 0, 0.6);
+    border: none;
+    color: white;
+    font-size: 0.9em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 2;
+  }
+  .gallery-item:hover .expand-btn { opacity: 1; }
+  .expand-btn:hover { background: rgba(0, 0, 0, 0.8); }
   .option-label {
     position: absolute; bottom: 4px; left: 4px;
     background: rgba(0,0,0,0.7); color: white;

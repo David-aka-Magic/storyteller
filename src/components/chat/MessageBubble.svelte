@@ -1,6 +1,7 @@
 <!-- src/components/chat/MessageBubble.svelte — Renders a single chat message -->
 <script lang="ts">
   import type { ChatMessage } from '$lib/types';
+  import ImageLightbox from '../shared/ImageLightbox.svelte';
 
   let {
     message,
@@ -19,6 +20,8 @@
     onGenerateImage?: () => void;
     onRegenerate?: () => void;
   } = $props();
+
+  let showLightbox = $state(false);
 </script>
 
 <div class="message-wrapper {message.sender}">
@@ -74,14 +77,26 @@
         src={message.image}
         alt="Generated Scene"
         class:dimmed={isGeneratingImage}
+        onclick={() => { if (!isGeneratingImage) showLightbox = true; }}
+        role="button"
+        tabindex="0"
+        onkeydown={(e) => { if (e.key === 'Enter') showLightbox = true; }}
       />
     </div>
   {/if}
 </div>
 
+{#if showLightbox && message.image}
+  <ImageLightbox
+    src={message.image}
+    alt="Generated Scene"
+    onclose={() => showLightbox = false}
+  />
+{/if}
+
 <style>
   .message-wrapper {
-    max-width: 80%;
+    max-width: 620px;
     padding: 10px 15px;
     border-radius: 8px;
     font-size: 0.95em;
@@ -89,7 +104,7 @@
 
   .message-wrapper.user {
     align-self: flex-end;
-    text-align: right;
+    text-align: left;
     background: var(--bg-message-user);
     color: var(--text-primary);
     border-bottom-right-radius: 0;
@@ -179,9 +194,13 @@
     border-radius: 8px;
     box-shadow: 0 4px 8px var(--shadow);
     transition: opacity 0.3s;
+    cursor: pointer;
   }
 
-  .img-container img.dimmed { opacity: 0.5; }
+  .img-container img.dimmed {
+    opacity: 0.5;
+    cursor: wait;
+  }
 
   .image-error {
     margin-top: 8px;

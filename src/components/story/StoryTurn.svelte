@@ -10,6 +10,7 @@
 <script lang="ts">
   import { convertFileSrc } from '@tauri-apps/api/core';
   import type { CharacterInScene, SceneJson } from '$lib/types';
+  import ImageLightbox from '../shared/ImageLightbox.svelte';
 
   export let turnNumber: number = 0;
   export let userAction: string = '';
@@ -54,6 +55,7 @@
 
   let imageLoaded = false;
   let imageLoadError = false;
+  let showLightbox = false;
 
   function handleImageLoad() {
     imageLoaded = true;
@@ -120,6 +122,8 @@
             class:visible={imageLoaded}
             on:load={handleImageLoad}
             on:error={handleImageError}
+            on:click={() => { if (imageLoaded) showLightbox = true; }}
+            style="cursor: {imageLoaded ? 'pointer' : 'default'};"
           />
         {/if}
 
@@ -211,6 +215,14 @@
     {/if}
   </div>
 </div>
+
+{#if showLightbox && imagePath}
+  <ImageLightbox
+    src={assetSrc(imagePath)}
+    alt="Scene: {scene?.location || 'Story scene'}"
+    onclose={() => showLightbox = false}
+  />
+{/if}
 
 <style>
   .story-turn {

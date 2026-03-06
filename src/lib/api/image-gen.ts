@@ -14,6 +14,9 @@ export interface MasterPortraitRequest {
   art_style?: string | null;
   custom_prompt?: string | null;
   seed?: number | null;
+  eye_color?: string | null;
+  height_scale?: number | null;
+  weight_scale?: number | null;
 }
 
 export interface SaveMasterPortraitRequest {

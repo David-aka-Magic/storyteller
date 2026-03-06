@@ -90,6 +90,9 @@ export interface CharacterProfile {
   master_image_path?: string;  // File path for IP-Adapter reference
   seed?: number;
   art_style?: string;
+  eye_color?: string;
+  height_scale?: number;   // 1-5 (1=Very Short … 5=Very Tall), default 3
+  weight_scale?: number;   // 1-5 (1=Very Slim … 5=Very Heavyset), default 3
 }
 
 /** Lightweight lookup result for LLM integration. */
@@ -161,6 +164,15 @@ export interface StorySummary {
   created_at: string;
   thumbnail_path: string | null;
   current_location: string | null;
+}
+
+/** A generated scene image belonging to a story. */
+export interface StoryImage {
+  id: number;
+  file_path: string;
+  message_id: number;
+  timestamp: string;
+  caption: string;
 }
 
 /** Parameters for creating a new story. */

@@ -169,6 +169,12 @@ impl OllamaState {
             .execute(pool).await.ok();
         sqlx::query("ALTER TABLE characters ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
             .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN eye_color TEXT")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN height_scale INTEGER DEFAULT 3")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN weight_scale INTEGER DEFAULT 3")
+            .execute(pool).await.ok();
 
         // =====================================================================
         // STORY_CHARACTERS junction table (many-to-many: character <-> story)

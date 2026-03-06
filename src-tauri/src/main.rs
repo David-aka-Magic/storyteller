@@ -77,6 +77,7 @@ fn main() {
             commands::story::list_stories,
             commands::story::delete_story,
             commands::story::export_story,
+            commands::story::get_story_images,
             // Character & Image commands
             image_gen::sd_webui::generate_image,
             image_gen::sd_webui::generate_image_variation,

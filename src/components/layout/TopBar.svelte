@@ -8,6 +8,7 @@
     onClearChat,
     onGenerateImage,
     onToggleConfigPanel,
+    onOpenGallery,
   }: {
     title?: string;
     isLoading?: boolean;
@@ -16,6 +17,7 @@
     onClearChat?: () => void;
     onGenerateImage?: () => void;
     onToggleConfigPanel?: () => void;
+    onOpenGallery?: () => void;
   } = $props();
 </script>
 
@@ -24,6 +26,12 @@
     <h1>{title}</h1>
   </div>
   <div class="topbar-right">
+    <button
+      class="gallery-btn"
+      onclick={onOpenGallery}
+    >
+      🖼 Gallery
+    </button>
     <button
       class="img-btn"
       onclick={onGenerateImage}
@@ -106,6 +114,18 @@
     transition: all 0.2s;
   }
   .panel-toggle-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+  .gallery-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-secondary);
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s;
+  }
+  .gallery-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
   .clear-btn {
     background: var(--accent-danger);

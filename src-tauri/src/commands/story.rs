@@ -45,6 +45,16 @@ pub struct StorySession {
     pub chat_id: Option<i64>,
 }
 
+/// A single generated image for a story, with caption extracted from its message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryImage {
+    pub id: i64,
+    pub file_path: String,
+    pub message_id: i64,
+    pub timestamp: String,
+    pub caption: String,
+}
+
 /// Lightweight summary for the story list view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorySummary {
@@ -244,7 +254,8 @@ pub async fn load_story(
     let char_rows = sqlx::query(
         "SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style, c.hair_color,
                 c.body_type, c.personality, c.additional_notes, c.default_clothing,
-                c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+                c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
+                c.eye_color, c.height_scale, c.weight_scale
          FROM characters c
          INNER JOIN story_characters sc ON sc.character_id = c.id
          WHERE sc.story_id = ?
@@ -275,6 +286,9 @@ pub async fn load_story(
             master_image_path: r.get("master_image_path"),
             seed: r.get("seed"),
             art_style: r.get("art_style"),
+            eye_color: r.get("eye_color"),
+            height_scale: r.get("height_scale"),
+            weight_scale: r.get("weight_scale"),
         })
         .collect();
 
@@ -727,6 +741,92 @@ pub async fn export_story(
     }
 }
 
+/// Fetch all generated images for a story, ordered by creation time.
+/// Looks up the story's linked chat_id first; falls back to the provided chat_id
+/// if the story has no linked chat (covers cases where the active sidebar chat
+/// differs from story_premises.chat_id).
+#[tauri::command]
+pub async fn get_story_images(
+    story_id: i64,
+    chat_id: Option<i64>,
+    state: State<'_, OllamaState>,
+) -> Result<Vec<StoryImage>, String> {
+    println!("[StoryManager] get_story_images: story_id={}, chat_id={:?}", story_id, chat_id);
+
+    // Resolve the effective chat_id: prefer the story's linked chat, fall back to provided
+    let story_chat_id: Option<i64> = sqlx::query(
+        "SELECT chat_id FROM story_premises WHERE id = ?"
+    )
+    .bind(story_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| format!("DB error: {}", e))?
+    .and_then(|row| row.get("chat_id"));
+
+    let effective_chat_id = story_chat_id.or(chat_id);
+
+    let Some(cid) = effective_chat_id else {
+        println!("[StoryManager] No chat_id for story {} — returning empty", story_id);
+        return Ok(vec![]);
+    };
+
+    println!("[StoryManager] Querying images for chat_id={}", cid);
+
+    let rows = sqlx::query(
+        "SELECT i.id, i.file_path, i.message_id, m.content, m.timestamp
+         FROM images i
+         INNER JOIN messages m ON m.id = i.message_id
+         WHERE i.chat_id = ?
+         ORDER BY m.timestamp ASC"
+    )
+    .bind(cid)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Failed to fetch story images: {}", e))?;
+
+    let images: Vec<StoryImage> = rows
+        .iter()
+        .map(|r| {
+            let content: String = r.get("content");
+            let caption = extract_caption_from_content(&content);
+            StoryImage {
+                id: r.get("id"),
+                file_path: r.get("file_path"),
+                message_id: r.get("message_id"),
+                timestamp: r.get::<Option<String>, _>("timestamp").unwrap_or_default(),
+                caption,
+            }
+        })
+        .collect();
+
+    println!("[StoryManager] Found {} images for story {}", images.len(), story_id);
+    Ok(images)
+}
+
+/// Extract a short caption from the raw assistant JSON content.
+fn extract_caption_from_content(content: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
+        if let Some(hint) = v.get("story_json")
+            .and_then(|sj| sj.get("summary_hint"))
+            .and_then(|h| h.as_str())
+        {
+            if !hint.is_empty() {
+                return hint.to_string();
+            }
+        }
+        if let Some(text) = v.get("story_json")
+            .and_then(|sj| sj.get("response"))
+            .and_then(|r| r.as_str())
+        {
+            if !text.is_empty() {
+                let truncated: String = text.chars().take(80).collect();
+                return if text.len() > 80 { format!("{}...", truncated) } else { truncated };
+            }
+        }
+    }
+    String::new()
+}
+
 // ============================================================================
 // INTERNAL HELPERS
 // ============================================================================
@@ -762,7 +862,8 @@ async fn load_story_internal(
     let char_rows = sqlx::query(
         "SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style, c.hair_color,
                 c.body_type, c.personality, c.additional_notes, c.default_clothing,
-                c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+                c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
+                c.eye_color, c.height_scale, c.weight_scale
          FROM characters c
          INNER JOIN story_characters sc ON sc.character_id = c.id
          WHERE sc.story_id = ?
@@ -793,6 +894,9 @@ async fn load_story_internal(
             master_image_path: r.get("master_image_path"),
             seed: r.get("seed"),
             art_style: r.get("art_style"),
+            eye_color: r.get("eye_color"),
+            height_scale: r.get("height_scale"),
+            weight_scale: r.get("weight_scale"),
         })
         .collect();
 

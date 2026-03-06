@@ -82,6 +82,12 @@ pub struct MasterPortraitRequest {
     /// Optional: ComfyUI base URL override.
     #[serde(default)]
     pub comfyui_url: Option<String>,
+    #[serde(default)]
+    pub eye_color: Option<String>,
+    #[serde(default)]
+    pub height_scale: Option<i32>,
+    #[serde(default)]
+    pub weight_scale: Option<i32>,
 }
 
 impl Default for MasterPortraitRequest {
@@ -100,6 +106,9 @@ impl Default for MasterPortraitRequest {
             custom_prompt: None,
             seed: None,
             comfyui_url: None,
+            eye_color: None,
+            height_scale: Some(3),
+            weight_scale: Some(3),
         }
     }
 }
@@ -224,7 +233,32 @@ pub fn build_portrait_prompt(request: &MasterPortraitRequest) -> String {
         _ => {}
     }
 
-    // Body type
+    // Eye color
+    if let Some(eyes) = &request.eye_color {
+        if !eyes.is_empty() {
+            parts.push(format!("{} eyes", eyes.to_lowercase()));
+        }
+    }
+
+    // Height from scale (1-5, 3 = average = skip)
+    match request.height_scale.unwrap_or(3) {
+        1 => parts.push("petite, short stature".to_string()),
+        2 => parts.push("short stature".to_string()),
+        4 => parts.push("tall".to_string()),
+        5 => parts.push("very tall, imposing stature".to_string()),
+        _ => {}
+    }
+
+    // Build/Weight from scale (1-5, 3 = average = skip)
+    match request.weight_scale.unwrap_or(3) {
+        1 => parts.push("very slim, thin body".to_string()),
+        2 => parts.push("slim body".to_string()),
+        4 => parts.push("heavyset, large body".to_string()),
+        5 => parts.push("very heavyset, large body".to_string()),
+        _ => {}
+    }
+
+    // Body type (legacy dropdown — still used when sliders are at default)
     if let Some(body) = &request.body_type {
         let body_desc = match body.as_str() {
             "Slim" => "slim body",
@@ -427,9 +461,7 @@ async fn poll_until_complete(
 
             // Outputs exist but no images found
             if outputs.as_object().map_or(false, |o| !o.is_empty()) {
-                return Err(
-                    "Workflow completed but no images were found in outputs".to_string()
-                );
+                return Err("Workflow completed but no images were found in outputs".to_string());
             }
         }
     }
@@ -466,8 +498,7 @@ async fn download_output_image(
         .await
         .map_err(|e| format!("Failed to read image bytes: {}", e))?;
 
-    std::fs::create_dir_all(output_dir)
-        .map_err(|e| format!("Cannot create output dir: {}", e))?;
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("Cannot create output dir: {}", e))?;
 
     let output_path = output_dir.join(&image.filename);
     std::fs::write(&output_path, &bytes)
@@ -628,16 +659,14 @@ pub async fn generate_master_portrait(
     );
 
     // 3. Build workflow
-    let workflow =
-        build_portrait_workflow(&prompt, &negative, seed, request.art_style.as_deref());
+    let workflow = build_portrait_workflow(&prompt, &negative, seed, request.art_style.as_deref());
 
     // 4. Queue prompt
     let prompt_id = queue_workflow(base_url, &workflow).await?;
     println!("[MasterPortrait] Queued prompt: {}", prompt_id);
 
     // 5. Poll for completion
-    let output_images =
-        poll_until_complete(base_url, &prompt_id, PORTRAIT_TIMEOUT_SECS).await?;
+    let output_images = poll_until_complete(base_url, &prompt_id, PORTRAIT_TIMEOUT_SECS).await?;
     println!(
         "[MasterPortrait] Generation complete! {} images",
         output_images.len()
@@ -785,14 +814,15 @@ mod tests {
             hair_color: Some("black".to_string()),
             hair_style: Some("short".to_string()),
             body_type: Some("Athletic".to_string()),
-            default_clothing: Some(
-                "fitted black t-shirt, dark jeans, silver watch".to_string(),
-            ),
+            default_clothing: Some("fitted black t-shirt, dark jeans, silver watch".to_string()),
             physical_features: Some("warm brown eyes, short beard".to_string()),
             art_style: Some("Realistic".to_string()),
             custom_prompt: None,
             seed: None,
             comfyui_url: None,
+            eye_color: None,
+            height_scale: None,
+            weight_scale: None,
         };
 
         let prompt = build_portrait_prompt(&req);

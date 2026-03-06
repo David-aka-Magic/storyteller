@@ -59,6 +59,16 @@ pub struct CharacterProfile {
     pub seed: Option<i64>,
     #[serde(default)]
     pub art_style: Option<String>,
+    #[serde(default)]
+    pub eye_color: Option<String>,
+    #[serde(default = "default_scale")]
+    pub height_scale: Option<i32>,
+    #[serde(default = "default_scale")]
+    pub weight_scale: Option<i32>,
+}
+
+fn default_scale() -> Option<i32> {
+    Some(3)
 }
 
 /// Lightweight lookup result for LLM integration

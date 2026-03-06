@@ -35,6 +35,9 @@ fn row_to_profile(r: &sqlx::sqlite::SqliteRow) -> CharacterProfile {
         master_image_path: r.get("master_image_path"),
         seed: r.get("seed"),
         art_style: r.get("art_style"),
+        eye_color: r.get("eye_color"),
+        height_scale: r.get("height_scale"),
+        weight_scale: r.get("weight_scale"),
     }
 }
 
@@ -57,8 +60,9 @@ pub async fn add_character(
         INSERT INTO characters (
             name, age, gender, skin_tone, hair_style, hair_color,
             body_type, personality, additional_notes, default_clothing,
-            sd_prompt, image, master_image_path, seed, art_style
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            sd_prompt, image, master_image_path, seed, art_style,
+            eye_color, height_scale, weight_scale
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#
     )
     .bind(&character.name)
@@ -76,6 +80,9 @@ pub async fn add_character(
     .bind(&character.master_image_path)
     .bind(&character.seed)
     .bind(&art_style)
+    .bind(&character.eye_color)
+    .bind(&character.height_scale)
+    .bind(&character.weight_scale)
     .execute(&state.db)
     .await
     .map_err(|e| format!("Failed to add character: {}", e))?;
@@ -96,7 +103,8 @@ pub async fn get_character_by_name(
             r#"
             SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
                    c.hair_color, c.body_type, c.personality, c.additional_notes,
-                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
+                   c.eye_color, c.height_scale, c.weight_scale
             FROM characters c
             INNER JOIN story_characters sc ON sc.character_id = c.id
             WHERE c.name = ? AND sc.story_id = ?
@@ -113,7 +121,8 @@ pub async fn get_character_by_name(
             r#"
             SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                    hair_color, body_type, personality, additional_notes,
-                   default_clothing, sd_prompt, image, master_image_path, seed, art_style
+                   default_clothing, sd_prompt, image, master_image_path, seed, art_style,
+                   eye_color, height_scale, weight_scale
             FROM characters
             WHERE name = ?
             LIMIT 1
@@ -138,7 +147,8 @@ pub async fn get_character_by_id(
         r#"
         SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                hair_color, body_type, personality, additional_notes,
-               default_clothing, sd_prompt, image, master_image_path, seed, art_style
+               default_clothing, sd_prompt, image, master_image_path, seed, art_style,
+               eye_color, height_scale, weight_scale
         FROM characters
         WHERE id = ?
         "#
@@ -177,6 +187,9 @@ pub async fn update_character(
             master_image_path = ?,
             seed = ?,
             art_style = ?,
+            eye_color = ?,
+            height_scale = ?,
+            weight_scale = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         "#
@@ -196,6 +209,9 @@ pub async fn update_character(
     .bind(&character.master_image_path)
     .bind(&character.seed)
     .bind(&art_style)
+    .bind(&character.eye_color)
+    .bind(&character.height_scale)
+    .bind(&character.weight_scale)
     .bind(&character.id)
     .execute(&state.db)
     .await
@@ -240,7 +256,8 @@ pub async fn list_characters_for_story(
             r#"
             SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
                    c.hair_color, c.body_type, c.personality, c.additional_notes,
-                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
+                   c.eye_color, c.height_scale, c.weight_scale
             FROM characters c
             INNER JOIN story_characters sc ON sc.character_id = c.id
             WHERE sc.story_id = ?
@@ -256,7 +273,8 @@ pub async fn list_characters_for_story(
             r#"
             SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                    hair_color, body_type, personality, additional_notes,
-                   default_clothing, sd_prompt, image, master_image_path, seed, art_style
+                   default_clothing, sd_prompt, image, master_image_path, seed, art_style,
+                   eye_color, height_scale, weight_scale
             FROM characters
             ORDER BY name ASC
             "#
@@ -279,7 +297,8 @@ pub async fn list_all_characters(
         r#"
         SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                hair_color, body_type, personality, additional_notes,
-               default_clothing, sd_prompt, image, master_image_path, seed, art_style
+               default_clothing, sd_prompt, image, master_image_path, seed, art_style,
+               eye_color, height_scale, weight_scale
         FROM characters
         ORDER BY name ASC
         "#
@@ -459,7 +478,8 @@ pub async fn search_characters(
             r#"
             SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
                    c.hair_color, c.body_type, c.personality, c.additional_notes,
-                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style
+                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
+                   c.eye_color, c.height_scale, c.weight_scale
             FROM characters c
             INNER JOIN story_characters sc ON sc.character_id = c.id
             WHERE c.name LIKE ? AND sc.story_id = ?
@@ -478,7 +498,8 @@ pub async fn search_characters(
             r#"
             SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                    hair_color, body_type, personality, additional_notes,
-                   default_clothing, sd_prompt, image, master_image_path, seed, art_style
+                   default_clothing, sd_prompt, image, master_image_path, seed, art_style,
+                   eye_color, height_scale, weight_scale
             FROM characters
             WHERE name LIKE ?
             ORDER BY name ASC

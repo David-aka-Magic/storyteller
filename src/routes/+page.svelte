@@ -10,6 +10,7 @@
   import CharacterModal from '../components/CharacterModal.svelte';
   import StoryModal from '../components/StoryModal.svelte';
   import SettingsModal from '../components/settings/SettingsModal.svelte';
+  import StoryGallery from '../components/story/StoryGallery.svelte';
 
   import { currentTheme, applyTheme } from '$lib/stores/theme';
   import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
@@ -49,6 +50,7 @@
 
   let showSettingsModal = false;
   let configPanelCollapsed = false;
+  let showGallery = false;
 
   // Orchestrator state
   let lastTurnResult: StoryTurnResult | null = null;
@@ -81,25 +83,84 @@
         }
       }
 
-      if (chatMsg.sender === 'ai' && msg.content.trim().startsWith('{')) {
-          try {
-              const parsed = JSON.parse(msg.content);
-              if (parsed.story_json || parsed.sd_json) {
-                  let storyText = parsed.story_json?.response || parsed.story_json || parsed.response || "Story loaded.";
-                  if (typeof storyText !== 'string') storyText = "Story data error.";
-
-                  chatMsg.data = {
-                      story: storyText,
-                      sd_prompt: parsed.sd_json?.look,
-                      sd_details: parsed.sd_json,
-                  };
-                  chatMsg.text = "";
-              }
-          } catch (e) { chatMsg.text = msg.content; }
+      if (chatMsg.sender === 'ai') {
+          const extracted = extractStoryFromContent(msg.content);
+          if (extracted) {
+              chatMsg.text = '';
+              chatMsg.data = extracted;
+          } else if (msg.content.trim().startsWith('{')) {
+              chatMsg.text = cleanJsonFallback(msg.content);
+          }
       }
       results.push(chatMsg);
     }
     return results;
+  }
+
+  function extractStoryFromContent(content: string): { story: string; sd_prompt?: string; sd_details?: any } | null {
+    const trimmed = content.trim();
+    if (!trimmed.startsWith('{')) return null;
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      try {
+        parsed = JSON.parse(trimmed.replace(/\/\/[^\n]*/g, ''));
+      } catch {
+        const fenceMatch = trimmed.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+        if (fenceMatch) {
+          try { parsed = JSON.parse(fenceMatch[1]); } catch { return null; }
+        } else {
+          return null;
+        }
+      }
+    }
+
+    let storyText: string | undefined =
+      parsed?.story_json?.response ??
+      (typeof parsed?.story_json === 'string' ? parsed.story_json : undefined) ??
+      (typeof parsed?.response === 'string' ? parsed.response : undefined) ??
+      (typeof parsed?.story === 'string' ? parsed.story : undefined) ??
+      (typeof parsed?.story_json?.summary_hint === 'string' ? parsed.story_json.summary_hint : undefined);
+
+    if (!storyText || typeof storyText !== 'string') return null;
+
+    let sdPrompt: string | undefined;
+    let sdDetails: any | undefined;
+    if (parsed.sd_json) {
+      sdPrompt = parsed.sd_json.look;
+      sdDetails = parsed.sd_json;
+    } else if (parsed.scene_json) {
+      const s = parsed.scene_json;
+      sdPrompt = [s.location, s.lighting, s.mood].filter(Boolean).join(', ');
+    }
+
+    return { story: storyText, sd_prompt: sdPrompt, sd_details: sdDetails };
+  }
+
+  function cleanJsonFallback(content: string): string {
+    try {
+      const parsed = JSON.parse(content.replace(/\/\/[^\n]*/g, ''));
+      const candidates = [
+        parsed?.story_json?.response,
+        parsed?.story_json,
+        parsed?.response,
+        parsed?.story,
+        parsed?.story_json?.summary_hint,
+      ];
+      for (const c of candidates) {
+        if (typeof c === 'string' && c.trim().length > 10) return c;
+      }
+    } catch { /* fall through */ }
+
+    return content
+      .replace(/[{}"[\]]/g, '')
+      .replace(/story_json|scene_json|characters_in_scene|generation_flags|turn_id|response|summary_hint|sd_json/g, '')
+      .replace(/:\s*/g, ' ')
+      .replace(/,\s*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || 'Story data could not be displayed.';
   }
 
   async function fetchChatList() {
@@ -428,7 +489,16 @@
         onClearChat={clearChat}
         onGenerateImage={generateCurrentImage}
         onToggleConfigPanel={() => configPanelCollapsed = !configPanelCollapsed}
+        onOpenGallery={() => showGallery = !showGallery}
       />
+      {#if showGallery && selectedStoryId && selectedStoryId !== '1'}
+        <StoryGallery
+          storyId={parseInt(selectedStoryId, 10)}
+          chatId={currentChatId}
+          storyTitle={stories.find(s => s.id === selectedStoryId)?.title ?? 'Story'}
+          onclose={() => showGallery = false}
+        />
+      {:else}
       <MainView
         {messages}
         {isLoading}
@@ -439,6 +509,7 @@
         onimagegenerated={handleImageGenerated}
         onregenerated={handleRegenerated}
       />
+      {/if}
     </div>
 
     <ConfigPanel
@@ -450,6 +521,7 @@
         onToggleCollapse={(val) => configPanelCollapsed = val}
         onSelectStory={(id) => {
             selectedStoryId = id;
+            showGallery = false;
             fetchCharacterList();
         }}
         onToggleCharacter={(id) => toggleCharacterSelection(id)}

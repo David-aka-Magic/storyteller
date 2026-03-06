@@ -116,23 +116,25 @@
 <div class="chat-main">
   <div class="chat-container">
     <div class="messages" id="message-box" bind:this={messagesContainer}>
-      {#each messages as msg, i (msg.id)}
-        <MessageBubble
-          message={msg}
-          isLast={i === messages.length - 1}
-          isLoading={isbusy}
-          isGeneratingImage={generatingImages.has(msg.id)}
-          imageError={imageErrors.get(msg.id)}
-          onGenerateImage={() => generateImage(msg)}
-          onRegenerate={regenerateText}
-        />
-      {/each}
+      <div class="messages-inner">
+        {#each messages as msg, i (msg.id)}
+          <MessageBubble
+            message={msg}
+            isLast={i === messages.length - 1}
+            isLoading={isbusy}
+            isGeneratingImage={generatingImages.has(msg.id)}
+            imageError={imageErrors.get(msg.id)}
+            onGenerateImage={() => generateImage(msg)}
+            onRegenerate={regenerateText}
+          />
+        {/each}
 
-      {#if isLoading}
-        <div class="loading">
-          <span class="spinner">↻</span> AI is writing...
-        </div>
-      {/if}
+        {#if isLoading}
+          <div class="loading">
+            <span class="spinner">↻</span> AI is writing...
+          </div>
+        {/if}
+      </div>
     </div>
 
     <ChatInput disabled={isbusy} onsubmit={onsendmessage} />
@@ -160,6 +162,12 @@
     flex: 1;
     overflow-y: auto;
     padding: 20px;
+  }
+
+  .messages-inner {
+    max-width: 800px;
+    margin: 0 auto;
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 15px;

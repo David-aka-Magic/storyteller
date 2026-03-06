@@ -24,7 +24,7 @@
   } = $props();
 </script>
 
-{#if currentChatId && (messages.length > 0 || isLoading)}
+{#if currentChatId}
   <ChatArea
     {messages}
     {isLoading}

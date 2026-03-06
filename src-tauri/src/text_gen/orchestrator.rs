@@ -341,7 +341,11 @@ fn character_prompt_fragment(
     }
 
     if !char_in_scene.view.is_empty() && char_in_scene.view != "NONE" {
-        parts.push(char_in_scene.view.to_lowercase().replace('-', " "));
+        let view_override = match char_in_scene.view.to_uppercase().as_str() {
+            "PORTRAIT" | "UPPER-BODY" | "UPPER_BODY" => "full body".to_string(),
+            _ => char_in_scene.view.to_lowercase().replace('-', " "),
+        };
+        parts.push(view_override);
     }
     if !char_in_scene.expression.is_empty() {
         parts.push(char_in_scene.expression.clone());
@@ -560,7 +564,10 @@ async fn generate_image_for_scene(
         cfg: None,
         width: Some(DEFAULT_IMAGE_WIDTH),
         height: Some(DEFAULT_IMAGE_HEIGHT),
-        negative_prompt: None,
+        negative_prompt: Some(
+            "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+             close-up, closeup, head shot, headshot, cropped, zoomed in".to_string()
+        ),
         timeout_secs: None,
     };
 
@@ -751,7 +758,8 @@ pub async fn process_story_turn(
             "prompt": assembled.prompt,
             "stream": false,
             "options": {
-                "num_ctx": NUM_CTX
+                "num_ctx": NUM_CTX,
+                "temperature": 0.8
             }
         }))
         .send()
@@ -1151,7 +1159,8 @@ pub async fn generate_scene_image_for_turn(
         width: Some(DEFAULT_IMAGE_WIDTH),
         height: Some(DEFAULT_IMAGE_HEIGHT),
         negative_prompt: Some(format!(
-            "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4){}",
+            "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+             close-up, closeup, head shot, headshot, cropped, zoomed in{}",
             sfw_negative
         )),
         timeout_secs: Some(600),

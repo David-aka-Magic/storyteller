@@ -1,6 +1,6 @@
 // src/lib/api/story.ts — Tauri command wrappers for story operations
 import { invoke } from '@tauri-apps/api/core';
-import type { StorySession, StorySummary, ExportFormat, StoryPremise, CompressedHistory } from '$lib/types';
+import type { StorySession, StorySummary, ExportFormat, StoryPremise, CompressedHistory, StoryImage } from '$lib/types';
 
 export async function createStory(
   title: string,
@@ -33,6 +33,10 @@ export async function deleteStory(storyId: number): Promise<void> {
 
 export async function exportStory(storyId: number, format: ExportFormat = 'json'): Promise<string> {
   return invoke('export_story', { storyId, format });
+}
+
+export async function getStoryImages(storyId: number, chatId?: number): Promise<StoryImage[]> {
+  return invoke('get_story_images', { storyId, chatId: chatId ?? null });
 }
 
 // ---- Legacy commands (pre-story-manager) ----
