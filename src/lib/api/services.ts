@@ -4,8 +4,10 @@ import { invoke } from '@tauri-apps/api/core';
 export interface ServiceStatusResponse {
   ollama_running: boolean;
   sd_running: boolean;
+  comfyui_running: boolean;
   ollama_error: string | null;
   sd_error: string | null;
+  comfyui_error: string | null;
 }
 
 export async function checkServicesStatus(): Promise<ServiceStatusResponse> {

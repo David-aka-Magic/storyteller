@@ -7,6 +7,8 @@ export interface AppConfig {
   sd_api_url: string;
   auto_start_services: boolean;
   content_rating: 'sfw' | 'nsfw';
+  comfyui_path: string;
+  setup_completed: boolean;
 }
 
 export async function getConfig(): Promise<AppConfig> {

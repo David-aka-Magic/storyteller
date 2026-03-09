@@ -26,13 +26,14 @@ fn main() {
             // Load config first
             let config = AppConfig::load(&handle);
             let sd_path = config.sd_path();
+            let comfyui_path = std::path::PathBuf::from(&config.comfyui_path);
             let auto_start = config.auto_start_services;
 
             // Store config in state
             app.manage(ConfigState(Mutex::new(config)));
 
             // Create and store service manager
-            let service_manager = ServiceManager::new(sd_path.clone());
+            let service_manager = ServiceManager::new(sd_path.clone(), comfyui_path.clone());
             app.manage(service_manager);
 
             // Initialize database state in separate thread
@@ -52,7 +53,7 @@ fn main() {
             if auto_start {
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(services::startup::auto_start_services(sd_path));
+                    rt.block_on(services::startup::auto_start_services(sd_path, comfyui_path));
                 });
             }
 
@@ -132,6 +133,10 @@ fn main() {
             text_gen::orchestrator::generate_scene_image_for_turn,
             text_gen::orchestrator::get_compression_diagnostics,
             text_gen::orchestrator::regenerate_story,
+            // Setup / dependency installer commands
+            services::setup::check_setup_status,
+            services::setup::install_dependency,
+            services::setup::install_all_dependencies,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

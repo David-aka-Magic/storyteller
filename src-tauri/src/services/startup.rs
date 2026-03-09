@@ -1,20 +1,22 @@
 // src-tauri/src/services/startup.rs
 //
-// Auto-start logic for Ollama and Stable Diffusion WebUI
-// =======================================================
+// Auto-start logic for Ollama, Stable Diffusion WebUI, and ComfyUI
+// =================================================================
 // Extracted from main.rs setup closure to keep startup lean.
 
 use std::path::PathBuf;
 use super::ServiceManager;
 
-pub async fn auto_start_services(sd_path: PathBuf) {
+pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
     // Small delay to let app fully initialize
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Start Ollama if not running
     if !ServiceManager::is_ollama_running().await {
         println!("[Startup] Starting Ollama...");
-        let _ = std::process::Command::new("ollama")
+        let ollama_bin = super::setup::find_ollama_binary()
+            .unwrap_or_else(|| std::path::PathBuf::from("ollama"));
+        let _ = std::process::Command::new(&ollama_bin)
             .arg("serve")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -68,5 +70,54 @@ pub async fn auto_start_services(sd_path: PathBuf) {
         }
     } else {
         println!("[Startup] Stable Diffusion already running");
+    }
+
+    // Start ComfyUI if not running and path is configured
+    if !comfyui_path.as_os_str().is_empty() {
+        if !ServiceManager::is_comfyui_running().await {
+            println!("[Startup] Starting ComfyUI...");
+
+            // Detect layout: standalone (embedded python) vs venv
+            let embedded_python = comfyui_path.join("python_embeded").join("python.exe");
+            let standalone_main = comfyui_path.join("ComfyUI").join("main.py");
+            let venv_python = comfyui_path.join("venv").join("Scripts").join("python.exe");
+            let venv_main = comfyui_path.join("main.py");
+
+            let result = if embedded_python.exists() && standalone_main.exists() {
+                std::process::Command::new(&embedded_python)
+                    .arg("-s")
+                    .arg(&standalone_main)
+                    .arg("--windows-standalone-build")
+                    .arg("--fast")
+                    .arg("--fp8_e4m3fn-unet")
+                    .current_dir(&comfyui_path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+            } else if venv_python.exists() && venv_main.exists() {
+                std::process::Command::new(&venv_python)
+                    .arg(&venv_main)
+                    .arg("--fast")
+                    .arg("--fp8_e4m3fn-unet")
+                    .current_dir(&comfyui_path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+            } else {
+                println!("[Startup] ComfyUI not found at {:?}", comfyui_path);
+                return;
+            };
+
+            match result {
+                Ok(_) => println!("[Startup] ComfyUI started"),
+                Err(e) => println!("[Startup] Failed to start ComfyUI: {}", e),
+            }
+        } else {
+            println!("[Startup] ComfyUI already running");
+        }
+    } else {
+        println!("[Startup] ComfyUI path not configured, skipping");
     }
 }

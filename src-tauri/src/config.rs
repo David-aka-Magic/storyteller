@@ -20,6 +20,14 @@ pub struct AppConfig {
     /// Content rating: "sfw" or "nsfw"
     #[serde(default = "default_content_rating")]
     pub content_rating: String,
+
+    /// Path to the ComfyUI installation directory (set during first-run setup)
+    #[serde(default)]
+    pub comfyui_path: String,
+
+    /// Whether the first-run dependency setup has been completed
+    #[serde(default)]
+    pub setup_completed: bool,
 }
 
 fn default_content_rating() -> String {
@@ -35,6 +43,8 @@ impl Default for AppConfig {
             sd_api_url: "http://127.0.0.1:7860".to_string(),
             auto_start_services: true,
             content_rating: "sfw".to_string(),
+            comfyui_path: String::new(),
+            setup_completed: false,
         }
     }
 }

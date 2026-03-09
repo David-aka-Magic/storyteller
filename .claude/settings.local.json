@@ -5,7 +5,8 @@
       "Bash(cargo build)",
       "Bash(cargo test)",
       "Bash(bun run check)",
-      "Bash(xargs grep -l \"import.*from.*[Cc]haracter\")"
+      "Bash(xargs grep -l \"import.*from.*[Cc]haracter\")",
+      "Bash(cargo check)"
     ]
   }
 }

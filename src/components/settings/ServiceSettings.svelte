@@ -4,9 +4,11 @@
   import { checkServicesStatus, startServices as apiStartServices } from '$lib/api/services';
 
   let sdPath = $state('');
+  let comfyuiPath = $state('');
   let autoStartServices = $state(true);
   let ollamaStatus = $state(false);
   let sdStatus = $state(false);
+  let comfyuiStatus = $state(false);
   let checkingStatus = $state(false);
   let savingConfig = $state(false);
 
@@ -17,8 +19,9 @@
 
   async function loadConfig() {
     try {
-      const config = await getConfig() as any;
+      const config = await getConfig();
       sdPath = config.sd_webui_path || '';
+      comfyuiPath = config.comfyui_path || '';
       autoStartServices = config.auto_start_services ?? true;
     } catch (e) {
       console.error('Failed to load config:', e);
@@ -28,10 +31,11 @@
   async function saveConfig() {
     savingConfig = true;
     try {
+      const config = await getConfig();
       await updateConfig({
+        ...config,
         sd_webui_path: sdPath,
-        ollama_url: 'http://localhost:11434',
-        sd_api_url: 'http://127.0.0.1:7860',
+        comfyui_path: comfyuiPath,
         auto_start_services: autoStartServices,
       });
     } catch (e) {
@@ -44,9 +48,10 @@
   async function checkStatus() {
     checkingStatus = true;
     try {
-      const status = await checkServicesStatus() as any;
+      const status = await checkServicesStatus();
       ollamaStatus = status.ollama_running;
       sdStatus = status.sd_running;
+      comfyuiStatus = status.comfyui_running;
     } catch (e) {
       console.error('Failed to check status:', e);
     }
@@ -56,11 +61,13 @@
   async function startServices() {
     checkingStatus = true;
     try {
-      const status = await apiStartServices() as any;
+      const status = await apiStartServices();
       ollamaStatus = status.ollama_running;
       sdStatus = status.sd_running;
+      comfyuiStatus = status.comfyui_running;
       if (status.ollama_error) console.error('Ollama error:', status.ollama_error);
       if (status.sd_error) console.error('SD error:', status.sd_error);
+      if (status.comfyui_error) console.error('ComfyUI error:', status.comfyui_error);
     } catch (e) {
       console.error('Failed to start services:', e);
       alert('Failed to start services: ' + e);
@@ -82,6 +89,12 @@
       {sdStatus ? '● Online' : '○ Offline'}
     </span>
   </div>
+  <div class="status-item">
+    <span class="status-label">ComfyUI</span>
+    <span class="status-indicator" class:online={comfyuiStatus} class:offline={!comfyuiStatus}>
+      {comfyuiStatus ? '● Online' : '○ Offline'}
+    </span>
+  </div>
 </div>
 
 <div class="service-actions">
@@ -101,6 +114,17 @@
     bind:value={sdPath}
     onblur={saveConfig}
     placeholder="C:\path\to\stable-diffusion-webui"
+  />
+</div>
+
+<div class="config-field">
+  <label for="comfyui-path">ComfyUI Path</label>
+  <input
+    id="comfyui-path"
+    type="text"
+    bind:value={comfyuiPath}
+    onblur={saveConfig}
+    placeholder="C:\path\to\ComfyUI"
   />
 </div>
 

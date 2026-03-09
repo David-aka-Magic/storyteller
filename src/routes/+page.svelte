@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import SetupWizard from '../components/setup/SetupWizard.svelte';
   import TitleBar from '../components/layout/TitleBar.svelte';
   import Sidebar from '../components/layout/Sidebar.svelte';
   import TopBar from '../components/layout/TopBar.svelte';
@@ -23,6 +24,7 @@
     linkCharacterToStory,
   } from '$lib/api/character';
   import { getStoryList, saveStoryPremise, deleteStories } from '$lib/api/story';
+  import { getConfig, updateConfig } from '$lib/api/config';
 
   import type {
     ChatSummary, ChatMessage, StoryResponse, SdDetails,
@@ -51,6 +53,9 @@
   let showSettingsModal = false;
   let configPanelCollapsed = false;
   let showGallery = false;
+
+  // Setup wizard gate
+  let setupComplete = false;
 
   // Orchestrator state
   let lastTurnResult: StoryTurnResult | null = null;
@@ -439,20 +444,43 @@
     contextMenu = { show: true, x: event.clientX, y: event.clientY, chatId };
   }
 
-  onMount(() => {
+  function loadAppData() {
+    fetchChatList();
+    fetchStoryList();
+    fetchCharacterList();
+  }
+
+  async function handleSetupComplete() {
+    setupComplete = true;
+    loadAppData();
+  }
+
+  onMount(async () => {
     applyTheme($currentTheme);
 
     document.addEventListener('click', (e) => {
         if (contextMenu.show && !(e.target as HTMLElement).closest('.context-menu')) contextMenu.show = false;
     });
-    fetchChatList();
-    fetchStoryList();
-    fetchCharacterList();
+
+    try {
+      const cfg = await getConfig();
+      setupComplete = cfg.setup_completed;
+    } catch {
+      setupComplete = false;
+    }
+
+    if (setupComplete) {
+      loadAppData();
+    }
   });
 </script>
 
 <main>
-  <TitleBar title={chatList.find(c => c.id === currentChatId)?.title ?? 'AI Story Writer'} />
+  <TitleBar title={setupComplete ? (chatList.find(c => c.id === currentChatId)?.title ?? 'AI Story Writer') : 'AI Story Writer — Setup'} />
+
+  {#if !setupComplete}
+    <SetupWizard oncomplete={handleSetupComplete} />
+  {:else}
   <div class="app-layout">
     <Sidebar
       {chatList} {currentChatId} {isLoading} {selectionState}
@@ -570,6 +598,7 @@
         onclose={() => showSettingsModal = false}
     />
   </div>
+  {/if}
 </main>
 
 <style>
