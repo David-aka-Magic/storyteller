@@ -79,6 +79,7 @@
 
   async function regenerateText() {
     if (isLoading || isRegenerating) return;
+    if (!messages.some(m => m.sender === 'user')) return;
     isRegenerating = true;
 
     try {

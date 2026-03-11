@@ -3,7 +3,7 @@
 // Context Compression System for StoryEngine
 // =============================================
 //
-// Prevents the Llama 3.1 8B model (8192-token context window) from running out
+// Prevents the Qwen 3.5 9B model (32768-token context window) from running out
 // of context by compressing older turns into a "story so far" summary while
 // keeping recent turns in full detail.
 //
@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 // CONSTANTS
 // ============================================================================
 
-/// Llama 3.1 8B context window size
+/// Qwen 3.5 9B context window size
 pub const MAX_CONTEXT_TOKENS: usize = 8192;
 
 /// Trigger compression when estimated tokens exceed this fraction of the window
@@ -451,26 +451,26 @@ fn build_character_section(characters: &[CharacterInfo]) -> String {
     section
 }
 
-/// Build the complete context string using Llama 3's chat template format.
+/// Build the complete context string using Qwen 3.5's ChatML template format.
 ///
-/// The output uses the `<|start_header_id|>...<|end_header_id|>` format
+/// The output uses the `<|im_start|>...<|im_end|>` ChatML format
 /// that the existing `generate_story` in chat.rs already uses, so this is
 /// a drop-in replacement for the context-building portion of that function.
 ///
 /// Layout:
 /// ```text
-/// <|start_header_id|>system<|end_header_id|>
+/// <|im_start|>system
 /// [system prompt + character DB + story premise]
 ///
 /// === STORY SO FAR ===
 /// [compressed summary of older turns]
-/// <|eot_id|>
+/// <|im_end|>
 ///
-/// <|start_header_id|>user<|end_header_id|> [recent turn user input] <|eot_id|>
-/// <|start_header_id|>assistant<|end_header_id|> [recent turn story text] <|eot_id|>
+/// <|im_start|>user [recent turn user input] <|im_end|>
+/// <|im_start|>assistant [recent turn story text] <|im_end|>
 /// ...
-/// <|start_header_id|>user<|end_header_id|> [current input] <|eot_id|>
-/// <|start_header_id|>assistant<|end_header_id|>
+/// <|im_start|>user [current input] <|im_end|>
+/// <|im_start|>assistant
 /// ```
 pub fn build_compressed_context(
     conversation: &mut ConversationContext,
@@ -502,7 +502,7 @@ pub fn build_compressed_context(
 
     // System message (includes compressed summary if present)
     prompt.push_str(&format!(
-        "<|start_header_id|>system<|end_header_id|>\n\n{}",
+        "<|im_start|>system\n{}",
         full_system
     ));
 
@@ -513,20 +513,20 @@ pub fn build_compressed_context(
             conversation.compressed.story_so_far
         ));
     }
-    prompt.push_str("<|eot_id|>");
+    prompt.push_str("<|im_end|>");
 
     // Recent turns in full detail
     for turn in &conversation.turns {
         // User message
         prompt.push_str(&format!(
-            "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>",
+            "<|im_start|>user\n{}<|im_end|>",
             turn.user_input
         ));
         // Assistant message (extract just the story text for context efficiency)
         if !turn.assistant_response.is_empty() {
             let story_text = extract_story_text(&turn.assistant_response);
             prompt.push_str(&format!(
-                "<|start_header_id|>assistant<|end_header_id|>\n\n{}<|eot_id|>",
+                "<|im_start|>assistant\n{}<|im_end|>",
                 story_text
             ));
         }
@@ -534,8 +534,8 @@ pub fn build_compressed_context(
 
     // Current user input
     prompt.push_str(&format!(
-        "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>\
-         <|start_header_id|>assistant<|end_header_id|>\n\n",
+        "<|im_start|>user\n{}<|im_end|>\
+         <|im_start|>assistant\n",
         current_user_input
     ));
 
@@ -620,6 +620,7 @@ pub async fn summarize_with_llm(
         "model": "Story_v27",
         "prompt": prompt,
         "stream": false,
+        "think": false,
         "options": {
             "num_ctx": 4096,
             "temperature": 0.3  // Low temperature for factual summarization

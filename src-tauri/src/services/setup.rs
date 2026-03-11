@@ -525,6 +525,13 @@ async fn check_custom_nodes(app: &AppHandle) -> Vec<DependencyStatus> {
                 .join("CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"),
             "CLIP-ViT-H-14 model not found",
         ),
+        (
+            "ipadapter_faceid_lora",
+            base.join("models")
+                .join("loras")
+                .join("ip-adapter-faceid-plusv2_sdxl_lora.safetensors"),
+            "IP-Adapter FaceID LoRA not found",
+        ),
     ];
 
     items
@@ -630,17 +637,17 @@ async fn install_ollama_model(app: &AppHandle) -> Result<(), String> {
         app,
         "ollama_model",
         0.0,
-        "Pulling mannix/llama3.1-8b-lexi base model (this will take a while)…",
+        "Pulling jaahas/qwen3.5-uncensored:9b base model (this will take a while)…",
         false,
     );
 
     let status = Command::new(&bin)
-        .args(["pull", "mannix/llama3.1-8b-lexi"])
+        .args(["pull", "jaahas/qwen3.5-uncensored:9b"])
         .status()
         .map_err(|e| format!("ollama pull failed: {}", e))?;
 
     if !status.success() {
-        return Err("ollama pull mannix/llama3.1-8b-lexi failed".to_string());
+        return Err("ollama pull jaahas/qwen3.5-uncensored:9b failed".to_string());
     }
 
     emit_progress(
@@ -864,6 +871,24 @@ async fn install_custom_node_ipadapter(app: &AppHandle) -> Result<(), String> {
         return Err("git clone ComfyUI-IPAdapter-Plus failed".to_string());
     }
 
+    let pip = comfyui_dir(app).join("venv").join("Scripts").join("pip.exe");
+    if pip.exists() {
+        emit_progress(
+            app,
+            "custom_node_ipadapter",
+            0.5,
+            "Installing insightface Python package…",
+            false,
+        );
+        let status = Command::new(&pip)
+            .args(["install", "insightface", "onnxruntime"])
+            .status()
+            .map_err(|e| format!("pip install insightface failed: {}", e))?;
+        if !status.success() {
+            return Err("pip install insightface onnxruntime failed".to_string());
+        }
+    }
+
     emit_progress(
         app,
         "custom_node_ipadapter",
@@ -893,6 +918,30 @@ async fn install_ipadapter_models(app: &AppHandle) -> Result<(), String> {
         "ipadapter_faceid_model",
         1.0,
         "IP-Adapter FaceID model installed",
+        false,
+    );
+    Ok(())
+}
+
+async fn install_ipadapter_lora(app: &AppHandle) -> Result<(), String> {
+    let dest = comfyui_dir(app)
+        .join("models")
+        .join("loras")
+        .join("ip-adapter-faceid-plusv2_sdxl_lora.safetensors");
+
+    download_file_with_progress(
+        app,
+        "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plusv2_sdxl_lora.safetensors",
+        &dest,
+        "ipadapter_faceid_lora",
+    )
+    .await?;
+
+    emit_progress(
+        app,
+        "ipadapter_faceid_lora",
+        1.0,
+        "IP-Adapter FaceID LoRA installed",
         false,
     );
     Ok(())
@@ -995,6 +1044,11 @@ async fn install_comfyui_torch(app: &AppHandle) -> Result<(), String> {
             pip
         ));
     }
+
+    emit_progress(app, "comfyui_torch", 0.01, "Upgrading pip prerequisites…", false);
+    let _ = Command::new(&pip)
+        .args(["install", "--upgrade", "typing-extensions", "pip"])
+        .status();
 
     let gpu = detect_gpu();
 
@@ -1130,6 +1184,7 @@ pub async fn install_dependency(name: String, app: AppHandle) -> Result<(), Stri
         "checkpoint_animagine" => install_checkpoint_animagine(&app).await,
         "custom_node_ipadapter" => install_custom_node_ipadapter(&app).await,
         "ipadapter_faceid_model" => install_ipadapter_models(&app).await,
+        "ipadapter_faceid_lora" => install_ipadapter_lora(&app).await,
         "insightface_buffalo_l" => install_insightface(&app).await,
         "clip_vision" => install_clip_vision(&app).await,
         _ => Err(format!("Unknown dependency: {}", name)),
@@ -1153,6 +1208,7 @@ pub async fn install_all_dependencies(app: AppHandle) -> Result<(), String> {
         ("checkpoint_animagine", "Animagine XL checkpoint"),
         ("custom_node_ipadapter", "IPAdapter custom node"),
         ("ipadapter_faceid_model", "IPAdapter FaceID model"),
+        ("ipadapter_faceid_lora", "IPAdapter FaceID LoRA"),
         ("insightface_buffalo_l", "InsightFace buffalo_l"),
         ("clip_vision", "CLIP vision model"),
     ];

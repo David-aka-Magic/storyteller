@@ -88,8 +88,6 @@ pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
                     .arg("-s")
                     .arg(&standalone_main)
                     .arg("--windows-standalone-build")
-                    .arg("--fast")
-                    .arg("--fp8_e4m3fn-unet")
                     .current_dir(&comfyui_path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
@@ -98,8 +96,6 @@ pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
             } else if venv_python.exists() && venv_main.exists() {
                 std::process::Command::new(&venv_python)
                     .arg(&venv_main)
-                    .arg("--fast")
-                    .arg("--fp8_e4m3fn-unet")
                     .current_dir(&comfyui_path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())

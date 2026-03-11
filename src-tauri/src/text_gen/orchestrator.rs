@@ -756,7 +756,9 @@ pub async fn process_story_turn(
         .json(&json!({
             "model": STORY_MODEL,
             "prompt": assembled.prompt,
+            "raw": true,
             "stream": false,
+            "think": false,
             "options": {
                 "num_ctx": NUM_CTX,
                 "temperature": 0.8

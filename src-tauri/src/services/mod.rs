@@ -174,8 +174,6 @@ impl ServiceManager {
         if standalone {
             cmd.arg("--windows-standalone-build");
         }
-        // Performance flags for both layouts
-        cmd.arg("--fast").arg("--fp8_e4m3fn-unet");
         cmd.current_dir(&self.comfyui_path)
            .stdout(Stdio::null())
            .stderr(Stdio::null());

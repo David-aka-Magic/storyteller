@@ -17,19 +17,21 @@
     checkpoint_animagine:   'Checkpoint: Animagine XL 3.1',
     custom_node_ipadapter:  'Custom Node: IP-Adapter Plus',
     ipadapter_faceid_model: 'IP-Adapter FaceID Model',
+    ipadapter_faceid_lora:  'IP-Adapter FaceID LoRA',
     insightface_buffalo_l:  'InsightFace Buffalo Model',
     clip_vision:            'CLIP Vision Model',
   };
 
   const DEP_SIZES: Record<string, string> = {
     ollama:                 '~270 MB',
-    ollama_model:           '~4.9 GB',
+    ollama_model:           '~6.6 GB',
     comfyui:                '~100 MB',
     comfyui_torch:          '~2.5 GB',
     checkpoint_juggernaut:  '~6.8 GB',
     checkpoint_animagine:   '~6.9 GB',
     custom_node_ipadapter:  '~5 MB',
     ipadapter_faceid_model: '~860 MB',
+    ipadapter_faceid_lora:  '~150 MB',
     insightface_buffalo_l:  '~700 MB',
     clip_vision:            '~3.9 GB',
   };
@@ -39,7 +41,7 @@
     'ollama', 'ollama_model', 'comfyui', 'comfyui_torch',
     'checkpoint_juggernaut', 'checkpoint_animagine',
     'custom_node_ipadapter', 'ipadapter_faceid_model',
-    'insightface_buffalo_l', 'clip_vision',
+    'ipadapter_faceid_lora', 'insightface_buffalo_l', 'clip_vision',
   ];
 
   // ── State ─────────────────────────────────────────────────────────────────
