@@ -461,6 +461,50 @@ pub async fn set_character_master_image(
     Ok(())
 }
 
+/// List characters filtered by art_style, excluding already-in-scene IDs.
+/// If art_style is None, returns all characters (no style filter).
+/// exclude_ids prevents returning characters already present in the scene.
+#[tauri::command]
+pub async fn list_characters_by_art_style(
+    art_style: Option<String>,
+    exclude_ids: Vec<i64>,
+    state: State<'_, OllamaState>,
+) -> Result<Vec<CharacterProfile>, String> {
+    use sqlx::QueryBuilder;
+    use sqlx::Sqlite;
+
+    let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT id, story_id, name, age, gender, skin_tone, hair_style, \
+         hair_color, body_type, personality, additional_notes, \
+         default_clothing, sd_prompt, image, master_image_path, seed, art_style, \
+         eye_color, height_scale, weight_scale \
+         FROM characters WHERE 1=1"
+    );
+
+    if let Some(ref style) = art_style {
+        builder.push(" AND art_style = ");
+        builder.push_bind(style.clone());
+    }
+
+    if !exclude_ids.is_empty() {
+        builder.push(" AND id NOT IN (");
+        let mut sep = builder.separated(", ");
+        for id in &exclude_ids {
+            sep.push_bind(*id);
+        }
+        builder.push(")");
+    }
+
+    builder.push(" ORDER BY name ASC");
+
+    let rows = builder.build()
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows.iter().map(row_to_profile).collect())
+}
+
 /// Search characters by partial name match (for autocomplete/search UI).
 /// When story_id is provided, restricts to characters in that story.
 #[tauri::command]

@@ -31,4 +31,14 @@ You MUST include ALL of these fields every single turn. Never omit any of them.
   "generation_flags": { "generate_image": <true if characters present or scene is visual>, "scene_changed": <true if location changed>, "characters_changed": <true if characters entered or exited> }
 }
 
-CHARACTER NAME RULES: Use EXACT names as registered. Names are case-sensitive. Never invent new characters."#;
+CHARACTER NAME RULES: Use EXACT names as registered. Names are case-sensitive. Never invent new characters.
+
+=== SCENE MANAGEMENT ===
+
+The system tracks scenes (locations with assigned characters). When you write a turn:
+
+1. In characters_in_scene, include ONLY characters who are physically present and active in the current scene.
+2. Do NOT include every registered character — only those relevant to this specific scene and moment.
+3. If characters enter or leave during the turn, reflect that in characters_in_scene (include those present at the END of the turn).
+4. If the scene transitions to a new location, update scene_json accordingly with the new location, time_of_day, and mood.
+5. If a [SCENE CHANGE] directive is included in the player input, write a natural transition to that location. Do not acknowledge the directive directly — weave the scene change seamlessly into the narrative."#;

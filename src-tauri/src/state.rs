@@ -4,9 +4,15 @@
 // Extended to support multi-story characters and master reference images
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::fs;
 use tauri::{AppHandle, Manager};
+
+/// Pending scene hints keyed by story_id.
+/// When the user manually changes scenes, we store a hint here.
+/// The next call to process_story_turn consumes it (one-shot).
+pub struct SceneHintState(pub Mutex<HashMap<i64, String>>);
 
 pub struct OllamaState {
     pub db: SqlitePool,
@@ -235,6 +241,74 @@ impl OllamaState {
         // Index for image lookups
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_images_chat ON images(chat_id)")
             .execute(pool).await.ok();
+
+        // =====================================================================
+        // SCENES TABLE
+        // =====================================================================
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS scenes (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT NOT NULL,
+                description   TEXT,
+                location      TEXT,
+                location_type TEXT,
+                time_of_day   TEXT,
+                mood          TEXT,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create scenes table");
+
+        // Many-to-many: scene <-> story
+        // Deleting a story removes its scene links (not the scenes themselves).
+        // Deleting a scene removes all its story links.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS story_scenes (
+                story_id INTEGER NOT NULL,
+                scene_id INTEGER NOT NULL,
+                PRIMARY KEY (story_id, scene_id),
+                FOREIGN KEY(story_id) REFERENCES story_premises(id) ON DELETE CASCADE,
+                FOREIGN KEY(scene_id) REFERENCES scenes(id)          ON DELETE CASCADE
+            )"
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create story_scenes table");
+
+        // Many-to-many: scene <-> character
+        // Deleting a scene or character removes their link rows.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS scene_characters (
+                scene_id     INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                PRIMARY KEY (scene_id, character_id),
+                FOREIGN KEY(scene_id)     REFERENCES scenes(id)     ON DELETE CASCADE,
+                FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
+            )"
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create scene_characters table");
+
+        // Indexes for scene tables
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ss_story   ON story_scenes(story_id)")
+            .execute(pool).await.ok();
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ss_scene   ON story_scenes(scene_id)")
+            .execute(pool).await.ok();
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sch_scene  ON scene_characters(scene_id)")
+            .execute(pool).await.ok();
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sch_char   ON scene_characters(character_id)")
+            .execute(pool).await.ok();
+
+        // Migration: add active_scene_id to story_premises (safe to run repeatedly)
+        sqlx::query(
+            "ALTER TABLE story_premises ADD COLUMN active_scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL"
+        )
+        .execute(pool)
+        .await
+        .ok();
 
         // =====================================================================
         // STORY MANAGER MIGRATIONS

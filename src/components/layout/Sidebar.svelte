@@ -1,102 +1,111 @@
-<!-- src/components/layout/Sidebar.svelte — Chat history sidebar -->
+<!-- src/components/layout/Sidebar.svelte — Story list sidebar -->
 <script lang="ts">
-  import type { ChatSummary, SelectionState } from '$lib/types';
+  import type { StoryPremise } from '$lib/types';
 
   let {
-    chatList = [],
-    currentChatId,
+    stories = [] as StoryPremise[],
+    selectedStoryId = '',
     isLoading,
-    selectionState,
-    onnewchat,
-    ondeleteselected,
+    onnewstory,
+    onselectstory,
     onopensettings,
-    onselectchat,
-    oncontextmenu,
-    onselectall,
-    onclearselection,
+    ondeletestory,
+    oneditstory,
   }: {
-    chatList?: ChatSummary[];
-    currentChatId: number;
+    stories?: StoryPremise[];
+    selectedStoryId?: string;
     isLoading: boolean;
-    selectionState: SelectionState;
-    onnewchat?: () => void;
-    ondeleteselected?: () => void;
+    onnewstory?: () => void;
+    onselectstory?: (id: string) => void;
     onopensettings?: () => void;
-    onselectchat?: (id: number) => void;
-    oncontextmenu?: (data: { event: MouseEvent; chatId: number }) => void;
-    onselectall?: () => void;
-    onclearselection?: () => void;
+    ondeletestory?: (id: string) => void;
+    oneditstory?: (story: StoryPremise) => void;
   } = $props();
 
-  function handleRightClick(e: MouseEvent, chatId: number) {
+  let contextMenu: { show: boolean; x: number; y: number; story: StoryPremise | null } = $state({
+    show: false, x: 0, y: 0, story: null,
+  });
+
+  function handleRightClick(e: MouseEvent, story: StoryPremise) {
     e.preventDefault();
-    oncontextmenu?.({ event: e, chatId });
+    contextMenu = { show: true, x: e.clientX, y: e.clientY, story };
+  }
+
+  function closeContextMenu() {
+    contextMenu = { ...contextMenu, show: false };
   }
 </script>
 
+<svelte:window onclick={(e) => {
+  if (contextMenu.show && !(e.target as HTMLElement).closest('.story-context-menu')) closeContextMenu();
+}} />
+
 <div class="sidebar">
   <div class="sidebar-top">
-    <h2>History</h2>
+    <h2>Stories</h2>
     <div class="sidebar-controls">
       <button
-        onclick={() => onnewchat?.()}
-        class="new-chat-btn"
+        onclick={() => onnewstory?.()}
+        class="new-story-btn"
         disabled={isLoading}
       >
-        + New Chat
+        + New Story
       </button>
-
-      {#if selectionState.isSelecting && selectionState.selectedIds.size > 0}
-        <button
-          onclick={() => ondeleteselected?.()}
-          class="delete-selected-btn"
-          disabled={isLoading}
-        >
-          Delete ({selectionState.selectedIds.size})
-        </button>
-      {/if}
     </div>
 
-    {#if selectionState.isSelecting}
-      <div class="selection-info">
-        <span>Selection Mode: {selectionState.selectedIds.size} selected</span>
-        <div class="selection-action-buttons">
-          <button onclick={() => onselectall?.()} class="select-all-btn">Select All</button>
-          <button onclick={() => onclearselection?.()} class="clear-select-btn">Cancel</button>
+    <div class="story-list">
+      <!-- Free Write always at the top -->
+      <!-- svelte-ignore a11y_interactive_supports_focus -->
+      <div
+        class="story-item free-write"
+        class:active={selectedStoryId === '1'}
+        onclick={() => onselectstory?.('1')}
+        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselectstory?.('1'); } }}
+        tabindex="0"
+        role="button"
+      >
+        <div class="story-icon">✍</div>
+        <div class="story-info">
+          <span class="story-title">Free Write</span>
+          <span class="story-desc">No story constraints</span>
         </div>
       </div>
-    {/if}
 
-    <div class="chat-list">
-      {#each chatList as chat (chat.id)}
+      {#if stories.filter(s => s.id !== '1').length > 0}
+        <div class="section-label">Your Stories</div>
+      {/if}
+
+      {#each stories.filter(s => s.id !== '1') as story (story.id)}
         <!-- svelte-ignore a11y_interactive_supports_focus -->
         <div
-          class="chat-item"
-          class:active={chat.id === currentChatId}
-          class:selected={selectionState.selectedIds.has(chat.id)}
-          onclick={() => onselectchat?.(chat.id)}
-          oncontextmenu={(e) => handleRightClick(e, chat.id)}
-          onkeydown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onselectchat?.(chat.id);
-            }
-          }}
+          class="story-item"
+          class:active={story.id === selectedStoryId}
+          onclick={() => onselectstory?.(story.id)}
+          oncontextmenu={(e) => handleRightClick(e, story)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselectstory?.(story.id); } }}
           tabindex="0"
           role="button"
         >
-          <div class="chat-item-content">
-            {#if selectionState.isSelecting}
-              <input
-                type="checkbox"
-                checked={selectionState.selectedIds.has(chat.id)}
-                class="chat-checkbox"
-              />
+          <div class="story-icon">📖</div>
+          <div class="story-info">
+            <span class="story-title">{story.title}</span>
+            {#if story.description}
+              <span class="story-desc">{story.description}</span>
             {/if}
-            <span class="chat-title">{chat.title}</span>
+          </div>
+          <div class="story-item-actions">
+            <button
+              class="icon-action"
+              onclick={(e) => { e.stopPropagation(); oneditstory?.(story); }}
+              title="Edit story"
+            >✏</button>
           </div>
         </div>
       {/each}
+
+      {#if stories.filter(s => s.id !== '1').length === 0}
+        <p class="empty-hint">No stories yet. Create one to get started.</p>
+      {/if}
     </div>
   </div>
 
@@ -107,6 +116,22 @@
     </button>
   </div>
 </div>
+
+<!-- Context menu for right-click on story items -->
+{#if contextMenu.show && contextMenu.story}
+  <div
+    class="story-context-menu"
+    style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+    role="menu"
+  >
+    <button onclick={() => { oneditstory?.(contextMenu.story!); closeContextMenu(); }}>
+      ✏ Edit Story
+    </button>
+    <button class="danger" onclick={() => { ondeletestory?.(contextMenu.story!.id); closeContextMenu(); }}>
+      🗑 Delete Story
+    </button>
+  </div>
+{/if}
 
 <style>
   .sidebar {
@@ -128,8 +153,8 @@
 
   .sidebar h2 {
     margin-top: 0;
-    margin-bottom: 15px;
-    font-size: 1.5em;
+    margin-bottom: 12px;
+    font-size: 1.2em;
     border-bottom: 1px solid var(--border-secondary);
     padding-bottom: 10px;
     text-align: center;
@@ -137,121 +162,130 @@
   }
 
   .sidebar-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-bottom: 15px;
+    margin-bottom: 12px;
   }
 
-  .new-chat-btn {
+  .new-story-btn {
     width: 100%;
     background: var(--accent-primary);
     color: var(--text-inverse);
-    padding: 10px;
+    padding: 8px 10px;
     font-weight: bold;
     border: none;
     border-radius: 4px;
     cursor: pointer;
+    font-size: 0.88em;
     transition: opacity 0.2s;
   }
-  .new-chat-btn:hover:not(:disabled) { opacity: 0.9; }
-  .new-chat-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .new-story-btn:hover:not(:disabled) { opacity: 0.9; }
+  .new-story-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .delete-selected-btn {
-    background: var(--accent-danger);
-    color: white;
-    padding: 10px;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: bold;
-  }
-  .delete-selected-btn:hover:not(:disabled) { opacity: 0.9; }
-
-  .selection-info {
-    background: var(--accent-warning);
-    border: 1px solid var(--accent-warning);
-    border-radius: 4px;
-    padding: 10px;
-    margin-bottom: 15px;
-    font-size: 13px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    color: #333;
+  .section-label {
+    font-size: 0.72em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 8px 6px 4px;
+    margin-top: 4px;
   }
 
-  .selection-action-buttons {
-    display: flex;
-    gap: 8px;
-  }
-
-  .select-all-btn, .clear-select-btn {
-    background: transparent;
-    border: 1px solid rgba(0, 0, 0, 0.3);
-    color: #333;
-    padding: 4px 10px;
-    border-radius: 3px;
-    font-size: 12px;
-    cursor: pointer;
-    flex: 1;
-  }
-  .select-all-btn:hover, .clear-select-btn:hover { background: rgba(0, 0, 0, 0.1); }
-
-  .chat-list {
+  .story-list {
     flex: 1;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
   }
 
-  .chat-item {
-    padding: 10px;
-    margin-bottom: 5px;
+  .story-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 8px;
     cursor: pointer;
-    border-radius: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-secondary);
-    transition: all 0.2s;
-    font-size: 0.9em;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid transparent;
+    transition: all 0.15s;
     outline: none;
     color: var(--text-primary);
+    position: relative;
   }
 
-  .chat-item:focus { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
-  .chat-item:hover { background: var(--bg-hover); }
+  .story-item:hover { background: var(--bg-hover); border-color: var(--border-secondary); }
+  .story-item:focus { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
 
-  .chat-item.active {
+  .story-item.active {
     background: var(--bg-active);
+    border-color: var(--border-active);
     color: var(--text-inverse);
-    font-weight: bold;
   }
 
-  .chat-item.selected {
-    background: var(--bg-tertiary) !important;
-    border: 2px solid var(--border-active) !important;
+  .story-item.free-write .story-icon { color: var(--accent-warning, #f0a500); }
+
+  .story-icon {
+    font-size: 1.1em;
+    flex-shrink: 0;
+    margin-top: 1px;
   }
 
-  .chat-item.active.selected {
-    background: var(--bg-active) !important;
-    border: 2px solid var(--border-active) !important;
-  }
-
-  .chat-item-content {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .chat-checkbox { margin: 0; cursor: pointer; width: 16px; height: 16px; }
-
-  .chat-title {
+  .story-info {
     flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .story-title {
+    font-size: 0.88em;
+    font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .story-desc {
+    font-size: 0.72em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0.8;
+  }
+
+  .story-item.active .story-desc { color: inherit; opacity: 0.7; }
+
+  .story-item-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+  }
+
+  .story-item:hover .story-item-actions { opacity: 1; }
+  .story-item.active .story-item-actions { opacity: 1; }
+
+  .icon-action {
+    background: none;
+    border: none;
+    color: inherit;
+    padding: 2px 4px;
+    font-size: 0.8em;
+    cursor: pointer;
+    border-radius: 3px;
+    opacity: 0.7;
+  }
+  .icon-action:hover { opacity: 1; background: rgba(255,255,255,0.1); }
+
+  .empty-hint {
+    font-size: 0.8em;
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 12px;
+    opacity: 0.7;
+    font-style: italic;
   }
 
   .sidebar-bottom {
@@ -277,4 +311,33 @@
   .settings-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .settings-icon { font-size: 1.2em; }
   .settings-text { flex: 1; text-align: left; }
+
+  /* Context menu */
+  .story-context-menu {
+    position: fixed;
+    z-index: 9999;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    min-width: 150px;
+  }
+
+  .story-context-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    padding: 8px 12px;
+    font-size: 0.88em;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.1s;
+  }
+
+  .story-context-menu button:hover { background: var(--bg-hover); }
+  .story-context-menu button.danger:hover { color: var(--accent-danger); }
 </style>

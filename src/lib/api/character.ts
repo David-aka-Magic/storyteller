@@ -69,3 +69,14 @@ export async function removeCharacterFromStory(characterId: number, storyId: num
 export async function listAllCharacters(): Promise<CharacterProfile[]> {
   return invoke('list_all_characters');
 }
+
+/**
+ * List characters matching a given art_style (pass null to get all).
+ * Characters whose IDs are in excludeIds are omitted (already in the scene).
+ */
+export async function listCharactersByArtStyle(
+  artStyle: string | null,
+  excludeIds: number[],
+): Promise<CharacterProfile[]> {
+  return invoke('list_characters_by_art_style', { artStyle, excludeIds });
+}

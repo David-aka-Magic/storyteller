@@ -431,23 +431,68 @@ pub struct AssembledContext {
     pub compressed_turn_count: usize,
 }
 
+/// Build a single character entry line.
+fn character_line(c: &CharacterInfo) -> String {
+    format!(
+        "- Name: {}, Age: {}, Gender: {}, Personality: {}. Appearance: {}. Default clothing: {}\n",
+        c.name,
+        c.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".to_string()),
+        c.gender.as_deref().unwrap_or("unknown"),
+        c.personality.as_deref().unwrap_or("not specified"),
+        c.appearance.as_deref().unwrap_or("not specified"),
+        c.default_clothing.as_deref().unwrap_or("not specified"),
+    )
+}
+
 /// Build the character database section of the system prompt.
+/// When scene_characters == all_characters (or scene is empty), emits one section.
+/// When they differ, emits a "CHARACTERS IN CURRENT SCENE" section and a
+/// lighter "ALL REGISTERED CHARACTERS" reference list.
 fn build_character_section(characters: &[CharacterInfo]) -> String {
     if characters.is_empty() {
         return String::new();
     }
     let mut section = String::from("REGISTERED CHARACTERS:\n");
     for c in characters {
-        section.push_str(&format!(
-            "- Name: {}, Age: {}, Gender: {}, Personality: {}. Appearance: {}. Default clothing: {}\n",
-            c.name,
-            c.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".to_string()),
-            c.gender.as_deref().unwrap_or("unknown"),
-            c.personality.as_deref().unwrap_or("not specified"),
-            c.appearance.as_deref().unwrap_or("not specified"),
-            c.default_clothing.as_deref().unwrap_or("not specified"),
-        ));
+        section.push_str(&character_line(c));
     }
+    section
+}
+
+fn build_dual_character_section(
+    scene_chars: &[CharacterInfo],
+    all_chars: &[CharacterInfo],
+) -> String {
+    // If there's no scene filter or they're the same set, use the simple section.
+    if scene_chars.is_empty() || scene_chars.len() == all_chars.len() {
+        return build_character_section(all_chars);
+    }
+
+    let mut section = String::new();
+
+    // Scene-filtered characters — what the LLM should actually use this turn
+    section.push_str(
+        "CHARACTERS IN CURRENT SCENE \
+         (ONLY include these characters in characters_in_scene — \
+         do NOT use others unless they explicitly enter):\n",
+    );
+    for c in scene_chars {
+        section.push_str(&character_line(c));
+    }
+
+    // Full roster for name reference (names only to save tokens)
+    section.push_str(
+        "\nALL REGISTERED CHARACTERS \
+         (reference only — do NOT place in scene unless they enter):\n",
+    );
+    let scene_names: std::collections::HashSet<&str> =
+        scene_chars.iter().map(|c| c.name.as_str()).collect();
+    for c in all_chars {
+        if !scene_names.contains(c.name.as_str()) {
+            section.push_str(&format!("- {}\n", c.name));
+        }
+    }
+
     section
 }
 
@@ -475,17 +520,25 @@ fn build_character_section(characters: &[CharacterInfo]) -> String {
 pub fn build_compressed_context(
     conversation: &mut ConversationContext,
     system_prompt: &str,
-    characters: &[CharacterInfo],
+    scene_characters: &[CharacterInfo],
+    all_characters: &[CharacterInfo],
     story_premise: Option<&str>,
+    scene_context: Option<&str>,
     current_user_input: &str,
 ) -> AssembledContext {
     // --- Step 1: Build the system prompt section ---
-    let character_section = build_character_section(characters);
+    let character_section = build_dual_character_section(scene_characters, all_characters);
+    let scene_section = scene_context
+        .map(|s| format!("\n{}\n", s))
+        .unwrap_or_default();
     let premise_section = story_premise
         .map(|p| format!("\nSTORY PREMISE:\n{}\n", p))
         .unwrap_or_default();
 
-    let full_system = format!("{}\n{}{}", system_prompt, character_section, premise_section);
+    let full_system = format!(
+        "{}\n{}{}{}",
+        system_prompt, character_section, scene_section, premise_section
+    );
     let system_tokens = estimate_tokens(&full_system);
     let input_tokens = estimate_tokens(current_user_input) + 8; // +framing
 
@@ -555,16 +608,24 @@ pub fn build_compressed_context(
 pub fn build_compressed_chat_messages(
     conversation: &mut ConversationContext,
     system_prompt: &str,
-    characters: &[CharacterInfo],
+    scene_characters: &[CharacterInfo],
+    all_characters: &[CharacterInfo],
     story_premise: Option<&str>,
+    scene_context: Option<&str>,
     current_user_input: &str,
 ) -> (Vec<Value>, bool) {
-    let character_section = build_character_section(characters);
+    let character_section = build_dual_character_section(scene_characters, all_characters);
+    let scene_section = scene_context
+        .map(|s| format!("\n{}\n", s))
+        .unwrap_or_default();
     let premise_section = story_premise
         .map(|p| format!("\nSTORY PREMISE:\n{}\n", p))
         .unwrap_or_default();
 
-    let full_system = format!("{}\n{}{}", system_prompt, character_section, premise_section);
+    let full_system = format!(
+        "{}\n{}{}{}",
+        system_prompt, character_section, scene_section, premise_section
+    );
     let system_tokens = estimate_tokens(&full_system);
     let input_tokens = estimate_tokens(current_user_input) + 8;
 
@@ -824,7 +885,9 @@ mod tests {
             &mut ctx,
             "You are a story engine.",
             &characters,
+            &[],
             Some("A fantasy adventure"),
+            None,
             "Look around",
         );
 
@@ -847,6 +910,8 @@ mod tests {
             &mut ctx,
             "System prompt",
             &[],
+            &[],
+            None,
             None,
             "Go east",
         );

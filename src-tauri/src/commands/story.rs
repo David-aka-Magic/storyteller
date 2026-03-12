@@ -156,6 +156,33 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) {
     // Index for chat -> story relationship
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_story_premises_chat ON story_premises(chat_id)")
         .execute(pool).await.ok();
+
+    // Ensure every existing story has a linked chat (for stories created before this requirement)
+    let orphan_stories = sqlx::query(
+        "SELECT id, title FROM story_premises WHERE chat_id IS NULL"
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    for story in &orphan_stories {
+        let story_id: i64 = story.get("id");
+        let title: String = story.get("title");
+        if let Ok(result) = sqlx::query("INSERT INTO chats (title) VALUES (?)")
+            .bind(&title)
+            .execute(pool)
+            .await
+        {
+            let chat_id = result.last_insert_rowid();
+            sqlx::query("UPDATE story_premises SET chat_id = ? WHERE id = ?")
+                .bind(chat_id)
+                .bind(story_id)
+                .execute(pool)
+                .await
+                .ok();
+            println!("[StoryManager] Migration: created chat {} for orphan story {}", chat_id, story_id);
+        }
+    }
 }
 
 // ============================================================================
@@ -487,6 +514,28 @@ pub async fn list_stories(
         .collect();
 
     Ok(summaries)
+}
+
+/// Look up the story linked to a given chat_id (reverse lookup).
+/// Returns None if no story uses that chat.
+#[tauri::command]
+pub async fn get_story_for_chat(
+    chat_id: i64,
+    state: State<'_, OllamaState>,
+) -> Result<Option<crate::models::StoryPremise>, String> {
+    let row = sqlx::query(
+        "SELECT id, title, description FROM story_premises WHERE chat_id = ?"
+    )
+    .bind(chat_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(row.map(|r| crate::models::StoryPremise {
+        id: r.get::<i64, _>("id"),
+        title: r.get("title"),
+        description: r.get("description"),
+    }))
 }
 
 /// Delete a story and all associated data (cascade).

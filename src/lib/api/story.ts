@@ -39,6 +39,10 @@ export async function getStoryImages(storyId: number, chatId?: number): Promise<
   return invoke('get_story_images', { storyId, chatId: chatId ?? null });
 }
 
+export async function getStoryForChat(chatId: number): Promise<{ id: number; title: string; description: string } | null> {
+  return invoke('get_story_for_chat', { chatId });
+}
+
 // ---- Legacy commands (pre-story-manager) ----
 
 export async function getStoryList(): Promise<StoryPremise[]> {

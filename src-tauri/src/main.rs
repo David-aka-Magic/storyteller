@@ -13,7 +13,8 @@ mod text_gen;
 
 use config::{AppConfig, ConfigState};
 use services::ServiceManager;
-use state::OllamaState;
+use state::{OllamaState, SceneHintState};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -48,6 +49,7 @@ fn main() {
             .expect("Failed to initialize state");
 
             app.manage(state);
+            app.manage(SceneHintState(Mutex::new(HashMap::new())));
 
             // Auto-start services if enabled (after all state is managed)
             if auto_start {
@@ -79,6 +81,7 @@ fn main() {
             commands::story::delete_story,
             commands::story::export_story,
             commands::story::get_story_images,
+            commands::story::get_story_for_chat,
             // Character & Image commands
             image_gen::sd_webui::generate_image,
             image_gen::sd_webui::generate_image_variation,
@@ -118,6 +121,7 @@ fn main() {
             commands::character::get_character_by_id,
             commands::character::list_characters_for_story,
             commands::character::list_all_characters,
+            commands::character::list_characters_by_art_style,
             commands::character::search_characters,
             commands::character::set_character_master_image,
             commands::character::lookup_scene_characters,
@@ -133,6 +137,22 @@ fn main() {
             text_gen::orchestrator::generate_scene_image_for_turn,
             text_gen::orchestrator::get_compression_diagnostics,
             text_gen::orchestrator::regenerate_story,
+            // Scene commands
+            commands::scene::create_scene,
+            commands::scene::update_scene,
+            commands::scene::delete_scene,
+            commands::scene::list_scenes_for_story,
+            commands::scene::list_all_scenes,
+            commands::scene::link_scene_to_story,
+            commands::scene::unlink_scene_from_story,
+            commands::scene::add_character_to_scene,
+            commands::scene::remove_character_from_scene,
+            commands::scene::get_scene_characters,
+            commands::scene::get_scene_with_characters,
+            commands::scene::set_active_scene,
+            commands::scene::get_active_scene,
+            commands::scene::create_scene_from_llm_output,
+            commands::scene::set_scene_hint,
             // Setup / dependency installer commands
             services::setup::check_setup_status,
             services::setup::install_dependency,

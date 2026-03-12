@@ -108,6 +108,31 @@ pub struct StoryPremise {
     pub description: String,
 }
 
+/// A user-defined scene (location + time + mood) that can be linked to stories.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Scene {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub location_type: Option<String>,
+    #[serde(default)]
+    pub time_of_day: Option<String>,
+    #[serde(default)]
+    pub mood: Option<String>,
+    pub created_at: String,
+}
+
+/// A scene with its currently-pinned characters.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SceneWithCharacters {
+    pub scene: Scene,
+    pub characters: Vec<CharacterProfile>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SdJson {
     pub name: String,

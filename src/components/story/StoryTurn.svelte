@@ -29,6 +29,8 @@
 
   export let oncharacterclick: ((char: CharacterInScene) => void) | undefined = undefined;
   export let onillustratescene: ((data: { storyText: string; messageId: number | null; turnNumber: number }) => void) | undefined = undefined;
+  /** If set, shows a scene-change marker above this turn. */
+  export let sceneTransition: { location: string; timeOfDay?: string; mood?: string } | null = null;
 
   /** Convert an absolute file path to a Tauri asset URL */
   function assetSrc(path: string): string {
@@ -81,6 +83,20 @@
 </script>
 
 <div class="story-turn" class:latest={isLatestTurn}>
+  <!-- Scene Transition Banner -->
+  {#if sceneTransition}
+    <div class="scene-transition-banner">
+      <span class="transition-icon">📍</span>
+      <span class="transition-location">{sceneTransition.location}</span>
+      {#if sceneTransition.timeOfDay}
+        <span class="transition-detail">· {sceneTransition.timeOfDay}</span>
+      {/if}
+      {#if sceneTransition.mood}
+        <span class="transition-detail">· {sceneTransition.mood}</span>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Turn Number Badge -->
   <div class="turn-gutter">
     <span class="turn-badge">{turnNumber}</span>
@@ -566,5 +582,37 @@
     background: var(--accent-primary, #58a6ff);
     animation: pulse 1.2s ease-in-out infinite;
     flex-shrink: 0;
+  }
+
+  /* ── Scene Transition Banner ── */
+  .scene-transition-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 16px;
+    margin: 12px 0 4px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    font-size: 0.8rem;
+    color: var(--text-muted, #6e7681);
+    grid-column: 1 / -1;
+  }
+
+  .transition-icon {
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  .transition-location {
+    font-weight: 600;
+    color: var(--text-secondary, #8b949e);
+    text-transform: capitalize;
+  }
+
+  .transition-detail {
+    color: var(--text-muted, #6e7681);
+    font-style: italic;
   }
 </style>

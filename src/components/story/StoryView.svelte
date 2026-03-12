@@ -27,6 +27,7 @@
   import SceneHeader from './SceneHeader.svelte';
   import StoryInput from './StoryInput.svelte';
   import TokenMeter from './TokenMeter.svelte';
+  import SceneTransitionSuggestion from './SceneTransitionSuggestion.svelte';
 
   import {
     hasGeneratedImage,
@@ -57,6 +58,10 @@
   export let oncharacterclick: ((data: CharacterInScene | { char: CharacterInScene; profile?: CharacterProfile }) => void) | undefined = undefined;
   export let onshowcompressedhistory: ((summary: string | undefined) => void) | undefined = undefined;
   export let onopenesettings: (() => void) | undefined = undefined;
+  /** Called when a scene is auto-created or matched after a turn. */
+  export let onscenechanged: ((sceneId: number, isNewScene: boolean) => void) | undefined = undefined;
+  /** Set this from the parent to trigger a scene-swap suggestion bar. Cleared automatically on send/dismiss. */
+  export let incomingSceneTransition: { sceneName: string; characterNames: string[] } | null = null;
 
   // ── Internal State ──
 
@@ -73,7 +78,12 @@
     imageError: string | null;
     /** DB message_id of the assistant message (needed to persist images). */
     messageId: number | null;
+    /** If the scene location changed from the previous turn, show a banner. */
+    sceneTransition: { location: string; timeOfDay?: string; mood?: string } | null;
   }
+
+  /** Pending scene-swap suggestion shown above the input (user-initiated). */
+  let pendingSceneTransition: { sceneName: string; characterNames: string[] } | null = null;
 
   let turns: DisplayTurn[] = [];
   let currentScene: SceneJson | null = null;
@@ -95,6 +105,11 @@
 
   // ── Derived ──
   $: isEmpty = turns.length === 0;
+
+  // Mirror incoming scene transition from parent to local state
+  $: if (incomingSceneTransition !== null) {
+    pendingSceneTransition = incomingSceneTransition;
+  }
 
   // ── Lifecycle ──
   onMount(() => {
@@ -135,6 +150,7 @@
             parseWarnings: [],
             imageError: null,
             messageId: rt.message_id ?? null,
+            sceneTransition: null,
           };
         });
       }
@@ -185,6 +201,18 @@
 
       clearTimeout(imageTimer);
 
+      // Detect scene location change for the transition banner
+      const prevLocation = currentScene?.location ?? null;
+      const newLocation = result.scene?.location ?? null;
+      const sceneTransition =
+        newLocation && newLocation !== prevLocation
+          ? {
+              location: newLocation,
+              timeOfDay: result.scene?.time_of_day || undefined,
+              mood: result.scene?.mood || undefined,
+            }
+          : null;
+
       // Build the display turn
       const displayTurn: DisplayTurn = {
         turnNumber: result.turn_id || pendingTurnNumber,
@@ -197,10 +225,14 @@
         parseWarnings: result.parse_warnings,
         imageError: result.image_generation_error,
         messageId: result.assistant_message_id ?? null,
+        sceneTransition,
       };
 
       turns = [...turns, displayTurn];
       totalTurns = pendingTurnNumber;
+
+      // Clear any pending suggestion (user sent a message, suggestion resolved)
+      pendingSceneTransition = null;
 
       // Update scene state
       if (result.scene) {
@@ -217,6 +249,12 @@
 
       // Update compression info
       compressionInfo = result.compression_info;
+
+      // Notify parent of scene change (for ScenePanel refresh)
+      if (result.active_scene_id != null) {
+        const isNew = sceneTransition !== null;
+        onscenechanged?.(result.active_scene_id, isNew);
+      }
 
       // Update story store
       recordTurnPlayed();
@@ -387,6 +425,7 @@
             isLatestTurn={i === turns.length - 1}
             messageId={turn.messageId}
             isGeneratingImage={generatingImageForTurn === turn.turnNumber}
+            sceneTransition={turn.sceneTransition}
             oncharacterclick={handleCharacterClick}
             onillustratescene={handleIllustrate}
           />
@@ -412,6 +451,16 @@
       <span class="error-message">{lastError}</span>
       <button class="error-dismiss" on:click={() => lastError = null}>✕</button>
     </div>
+  {/if}
+
+  <!-- Scene Transition Suggestion Bar (user-initiated scene swap) -->
+  {#if pendingSceneTransition}
+    <SceneTransitionSuggestion
+      sceneName={pendingSceneTransition.sceneName}
+      characterNames={pendingSceneTransition.characterNames}
+      onSend={(text) => { pendingSceneTransition = null; handleSubmit(text); }}
+      onDismiss={() => pendingSceneTransition = null}
+    />
   {/if}
 
   <!-- Input Area -->

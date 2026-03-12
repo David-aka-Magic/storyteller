@@ -6,8 +6,8 @@
   import Sidebar from '../components/layout/Sidebar.svelte';
   import TopBar from '../components/layout/TopBar.svelte';
   import MainView from '../components/layout/MainView.svelte';
-  import ConfigPanel from '../components/ConfigPanel.svelte';
-  import ContextMenu from '../components/ContextMenu.svelte';
+  import ScenePanel from '../components/layout/ScenePanel.svelte';
+  import SceneTransitionSuggestion from '../components/story/SceneTransitionSuggestion.svelte';
   import CharacterModal from '../components/CharacterModal.svelte';
   import StoryModal from '../components/StoryModal.svelte';
   import SettingsModal from '../components/settings/SettingsModal.svelte';
@@ -16,29 +16,25 @@
   import { currentTheme, applyTheme } from '$lib/stores/theme';
   import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
   import { readFileBase64 } from '$lib/api/image-gen';
-  import { getChatList, newChat, loadChat, deleteChats, clearHistory, setChatCharacter, saveImageForMessage } from '$lib/api/chat';
+  import { newChat, loadChat, clearHistory, setChatCharacter, saveImageForMessage } from '$lib/api/chat';
   import {
     listCharactersForStory,
     addCharacter, updateCharacter,
     deleteCharacter as apiDeleteCharacter,
     linkCharacterToStory,
   } from '$lib/api/character';
-  import { getStoryList, saveStoryPremise, deleteStories } from '$lib/api/story';
-  import { getConfig, updateConfig } from '$lib/api/config';
+  import { listStories, loadStory, createStory, saveStoryPremise, deleteStory as apiDeleteStory } from '$lib/api/story';
+  import { getConfig } from '$lib/api/config';
+  import { setSceneHint } from '$lib/api/scene';
 
   import type {
-    ChatSummary, ChatMessage, StoryResponse, SdDetails,
-    Phase1Response, SelectionState, ContextMenuData,
+    ChatMessage, SdDetails,
     CharacterProfile, StoryPremise, StoryTurnResult
   } from '../lib/types';
 
-  let chatList: ChatSummary[] = [];
   let currentChatId: number = 1;
   let messages: ChatMessage[] = [];
   let isLoading = false;
-
-  let selectionState: SelectionState = { selectedIds: new Set<number>(), isSelecting: false };
-  let contextMenu: ContextMenuData = { show: false, x: 0, y: 0, chatId: null };
 
   let showCharModal = false;
   let characterToEdit: CharacterProfile | null = null;
@@ -51,7 +47,7 @@
   let selectedStoryId: string = '';
 
   let showSettingsModal = false;
-  let configPanelCollapsed = false;
+  let scenePanelCollapsed = false;
   let showGallery = false;
 
   // Setup wizard gate
@@ -59,6 +55,10 @@
 
   // Orchestrator state
   let lastTurnResult: StoryTurnResult | null = null;
+
+  // Scene sync state
+  let scenePanelRefreshKey = 0;
+  let pendingSceneTransition: { sceneName: string; characterNames: string[] } | null = null;
 
   async function mapMessagesToFrontend(backendMessages: any[]): Promise<ChatMessage[]> {
     let idCounter = Date.now();
@@ -168,143 +168,130 @@
       .trim() || 'Story data could not be displayed.';
   }
 
-  async function fetchChatList() {
-    try {
-      chatList = await getChatList();
-      if (chatList.length > 0 && !chatList.some(c => c.id === currentChatId)) {
-        currentChatId = chatList[chatList.length - 1].id;
-      }
-    } catch (e) { console.error(e); }
-  }
+  async function loadSelectedStory(id: string) {
+    if (id === selectedStoryId && messages.length > 0) return;
+    selectedStoryId = id;
+    showGallery = false;
 
-  async function loadSelectedChat(id: number) {
-    if (isLoading || id === currentChatId) return;
+    if (id === '1') {
+      // Free Write — use default chat (id 1) and clear the view
+      currentChatId = 1;
+      isLoading = true;
+      try {
+        const msgs = await loadChat(1) as any[];
+        messages = await mapMessagesToFrontend(msgs);
+      } catch {
+        messages = [];
+      } finally {
+        isLoading = false;
+      }
+      selectedCharacterIds = new Set();
+      await fetchCharacterList();
+      return;
+    }
+
     isLoading = true;
-    currentChatId = id;
-    messages = [];
-
     try {
-      const msgs = await loadChat(id) as any[];
-      messages = await mapMessagesToFrontend(msgs);
-
-      const chat = chatList.find(c => c.id === id);
-      selectedCharacterIds.clear();
-      if (chat && chat.character_id) {
-          selectedCharacterIds.add(Number(chat.character_id));
+      const session = await loadStory(parseInt(id, 10));
+      if (session.chat_id) {
+        currentChatId = session.chat_id;
+        const msgs = await loadChat(session.chat_id) as any[];
+        messages = await mapMessagesToFrontend(msgs);
+      } else {
+        messages = [];
       }
-      selectedCharacterIds = selectedCharacterIds;
+      selectedCharacterIds = new Set();
+      await fetchCharacterList();
     } catch (e) {
-      messages = [{ id: Date.now(), text: `Error: ${e}`, sender: 'ai' }];
+      console.error('[loadSelectedStory] failed:', e);
+      messages = [];
     } finally {
       isLoading = false;
     }
   }
 
-  async function startNewChat() {
-    if (isLoading) return;
-    try {
-      currentChatId = await newChat();
-      messages = [];
-      selectedCharacterIds.clear();
-      selectedCharacterIds = selectedCharacterIds;
-      await fetchChatList();
-    } catch (e) { console.error(e); }
-  }
-
   async function clearChat() {
     if (isLoading) return;
     try {
-        await clearHistory(currentChatId);
-        messages = [];
-        await fetchChatList();
-    } catch (e) { console.error(e); }
-  }
-
-  async function deleteSelectedChats() {
-    if (selectionState.selectedIds.size === 0) return;
-    const ids = Array.from(selectionState.selectedIds);
-    try {
-        await deleteChats(ids);
-        selectionState = { isSelecting: false, selectedIds: new Set() };
-        await fetchChatList();
-        if (ids.includes(currentChatId) && chatList.length > 0) {
-            currentChatId = chatList[0].id;
-            await loadSelectedChat(currentChatId);
-        }
+      await clearHistory(currentChatId);
+      messages = [];
     } catch (e) { console.error(e); }
   }
 
   async function sendMessage(text: string) {
-      const isNew = messages.length === 0;
-      isLoading = true;
-      messages = [...messages, { id: Date.now(), text, sender: 'user' }];
+    isLoading = true;
+    messages = [...messages, { id: Date.now(), text, sender: 'user' }];
 
-      console.log('[DEBUG] Calling processStoryTurn with chatId:', currentChatId, 'text:', text);
+    console.log('[DEBUG] Calling processStoryTurn with chatId:', currentChatId, 'text:', text);
 
-      try {
-        const storyId = selectedStoryId && selectedStoryId !== '1'
-          ? parseInt(selectedStoryId, 10)
-          : undefined;
+    try {
+      const storyId = selectedStoryId && selectedStoryId !== '1'
+        ? parseInt(selectedStoryId, 10)
+        : undefined;
 
-        const result = await processStoryTurn(currentChatId, text, storyId);
-        lastTurnResult = result;
+      const result = await processStoryTurn(currentChatId, text, storyId);
+      lastTurnResult = result;
 
-        const sdPrompt = result.scene
-          ? [result.scene.location, result.scene.lighting, result.scene.mood]
-              .filter(Boolean).join(', ')
-          : undefined;
+      const sdPrompt = result.scene
+        ? [result.scene.location, result.scene.lighting, result.scene.mood]
+            .filter(Boolean).join(', ')
+        : undefined;
 
-        const firstChar = result.characters[0];
-        const sdDetails: SdDetails | undefined = result.scene
-          ? {
-              name: firstChar?.name ?? '',
-              view: firstChar?.view ?? '',
-              features: firstChar?.expression ?? '',
-              action_context: firstChar?.action ?? '',
-              clothing: firstChar?.clothing ?? '',
-              look: [
-                result.scene.location,
-                result.scene.time_of_day,
-                result.scene.lighting,
-                result.scene.mood,
-              ].filter(Boolean).join(', '),
-            }
-          : undefined;
-
-        let newMsg: ChatMessage = {
-          id: Date.now() + 1,
-          text: '',
-          sender: 'ai',
-          data: {
-            story: result.story_text,
-            sd_prompt: sdPrompt,
-            sd_details: sdDetails,
-          },
-          dbMessageId: result.assistant_message_id ?? undefined,
-          sceneCharacterNames: result.characters.map(c => c.name),
-        };
-
-        if (result.generated_image_path) {
-          try {
-            const base64 = await readFileBase64(result.generated_image_path);
-            newMsg.image = `data:image/png;base64,${base64}`;
-          } catch (e) {
-            console.warn('[Orchestrator] Failed to load image:', e);
+      const firstChar = result.characters[0];
+      const sdDetails: SdDetails | undefined = result.scene
+        ? {
+            name: firstChar?.name ?? '',
+            view: firstChar?.view ?? '',
+            features: firstChar?.expression ?? '',
+            action_context: firstChar?.action ?? '',
+            clothing: firstChar?.clothing ?? '',
+            look: [
+              result.scene.location,
+              result.scene.time_of_day,
+              result.scene.lighting,
+              result.scene.mood,
+            ].filter(Boolean).join(', '),
           }
+        : undefined;
+
+      let newMsg: ChatMessage = {
+        id: Date.now() + 1,
+        text: '',
+        sender: 'ai',
+        data: {
+          story: result.story_text,
+          sd_prompt: sdPrompt,
+          sd_details: sdDetails,
+        },
+        dbMessageId: result.assistant_message_id ?? undefined,
+        sceneCharacterNames: result.characters.map(c => c.name),
+      };
+
+      if (result.generated_image_path) {
+        try {
+          const base64 = await readFileBase64(result.generated_image_path);
+          newMsg.image = `data:image/png;base64,${base64}`;
+        } catch (e) {
+          console.warn('[Orchestrator] Failed to load image:', e);
         }
-
-        messages = [...messages, newMsg];
-
-        if (result.parse_status !== 'ok') console.warn('[Orchestrator] Parse warnings:', result.parse_warnings);
-        if (result.image_generation_error) console.warn('[Orchestrator] Image gen error:', result.image_generation_error);
-
-        if (isNew) await fetchChatList();
-      } catch (err) {
-          console.error('[DEBUG] processStoryTurn error:', JSON.stringify(err));
-          messages = [...messages, { id: Date.now(), text: `Error: ${err}`, sender: 'ai' }];
-      } finally {
-        isLoading = false;
       }
+
+      messages = [...messages, newMsg];
+
+      if (result.parse_status !== 'ok') console.warn('[Orchestrator] Parse warnings:', result.parse_warnings);
+      if (result.image_generation_error) console.warn('[Orchestrator] Image gen error:', result.image_generation_error);
+
+      // Refresh ScenePanel if a scene was auto-created/matched this turn
+      if (result.active_scene_id != null) {
+        scenePanelRefreshKey += 1;
+        pendingSceneTransition = null;
+      }
+    } catch (err) {
+      console.error('[DEBUG] processStoryTurn error:', JSON.stringify(err));
+      messages = [...messages, { id: Date.now(), text: `Error: ${err}`, sender: 'ai' }];
+    } finally {
+      isLoading = false;
+    }
   }
 
   // Called by ChatArea when a per-message image is generated
@@ -346,71 +333,81 @@
 
   async function fetchStoryList() {
     try {
-        const list = await getStoryList();
-        stories = [{ id: '1', title: 'Free Write', description: 'No constraints.' }, ...list];
-        if (!selectedStoryId) selectedStoryId = stories[0].id;
+      const list = await listStories();
+      stories = [
+        { id: '1', title: 'Free Write', description: 'No constraints.' },
+        ...list.map(s => ({ id: String(s.story_id), title: s.title, description: s.description })),
+      ];
+      if (!selectedStoryId) selectedStoryId = stories[0].id;
     } catch (e) { console.error(e); }
   }
 
   async function handleSaveStory(form: StoryPremise) {
-      try {
-          await saveStoryPremise(form.title, form.description, form.id ? Number(form.id) : null);
-          await fetchStoryList();
-          showStoryModal = false;
-      } catch (e) { console.error(e); }
+    try {
+      if (form.id && Number(form.id) > 0) {
+        await saveStoryPremise(form.title, form.description, Number(form.id));
+        await fetchStoryList();
+        showStoryModal = false;
+      } else {
+        const newId = await createStory(form.title, form.description);
+        await fetchStoryList();
+        showStoryModal = false;
+        await loadSelectedStory(String(newId));
+      }
+    } catch (e) { console.error(e); }
   }
 
   async function deleteStory(id: string) {
     try {
-        await deleteStories([Number(id)]);
-        await fetchStoryList();
-        if (selectedStoryId === id) selectedStoryId = stories[0].id;
+      await apiDeleteStory(Number(id));
+      await fetchStoryList();
+      if (selectedStoryId === id) await loadSelectedStory('1');
     } catch (e) { console.error(e); }
   }
 
   async function fetchCharacterList() {
-      try {
-        const storyId = selectedStoryId && selectedStoryId !== '1'
-          ? parseInt(selectedStoryId, 10)
-          : null;
-        characters = await listCharactersForStory(storyId ?? undefined);
-      } catch (e) { console.error(e); }
-    }
+    try {
+      const storyId = selectedStoryId && selectedStoryId !== '1'
+        ? parseInt(selectedStoryId, 10)
+        : null;
+      characters = await listCharactersForStory(storyId ?? undefined);
+    } catch (e) { console.error(e); }
+  }
 
   async function handleSaveCharacter(form: CharacterProfile) {
-      try {
-          const storyId = selectedStoryId && selectedStoryId !== '1'
-              ? parseInt(selectedStoryId, 10)
-              : undefined;
+    try {
+      const storyId = selectedStoryId && selectedStoryId !== '1'
+        ? parseInt(selectedStoryId, 10)
+        : undefined;
 
-          const characterToSave = { ...form, story_id: storyId ?? form.story_id };
+      const characterToSave = { ...form, story_id: storyId ?? form.story_id };
 
-          if (form.id && form.id > 0) {
-              await updateCharacter(characterToSave);
-          } else {
-              const newId = await addCharacter({ ...characterToSave, id: 0 });
-              if (storyId && newId) await linkCharacterToStory(newId, storyId);
-          }
+      if (form.id && form.id > 0) {
+        await updateCharacter(characterToSave);
+      } else {
+        const newId = await addCharacter({ ...characterToSave, id: 0 });
+        if (storyId && newId) await linkCharacterToStory(newId, storyId);
+      }
 
-          showCharModal = false;
-          await fetchCharacterList();
-      } catch (e) { console.error('Failed to save character:', e); }
+      showCharModal = false;
+      await fetchCharacterList();
+    } catch (e) { console.error('Failed to save character:', e); }
   }
 
   async function handleLinkToStory(characterId: number) {
-      if (!selectedStoryId || selectedStoryId === '1') return;
-      try {
-        await linkCharacterToStory(characterId, parseInt(selectedStoryId, 10));
-        await fetchCharacterList();
-      } catch (e) { console.error('[LinkToStory] Failed:', e); }
-    }
+    if (!selectedStoryId || selectedStoryId === '1') return;
+    try {
+      await linkCharacterToStory(characterId, parseInt(selectedStoryId, 10));
+      await fetchCharacterList();
+    } catch (e) { console.error('[LinkToStory] Failed:', e); }
+  }
 
   async function deleteCharacter(id: number) {
     try {
-        await apiDeleteCharacter(id);
-        await fetchCharacterList();
-        selectedCharacterIds.delete(id);
-        selectedCharacterIds = selectedCharacterIds;
+      await apiDeleteCharacter(id);
+      await fetchCharacterList();
+      selectedCharacterIds.delete(id);
+      selectedCharacterIds = selectedCharacterIds;
     } catch (e) { console.error(e); }
   }
 
@@ -418,34 +415,20 @@
     let newId: number | null = null;
 
     if (selectedCharacterIds.has(id)) {
-        selectedCharacterIds.delete(id);
+      selectedCharacterIds.delete(id);
     } else {
-        selectedCharacterIds.clear();
-        selectedCharacterIds.add(id);
-        newId = id;
+      selectedCharacterIds.clear();
+      selectedCharacterIds.add(id);
+      newId = id;
     }
     selectedCharacterIds = selectedCharacterIds;
 
     try {
-        await setChatCharacter(currentChatId, newId);
-        const c = chatList.find(x => x.id === currentChatId);
-        if (c) c.character_id = newId != null ? String(newId) : undefined;
+      await setChatCharacter(currentChatId, newId);
     } catch (e) { console.error(e); }
   }
 
-  function handleContextMenu(data: { event: MouseEvent; chatId: number }) {
-    const { event, chatId } = data;
-    if (!selectionState.isSelecting) {
-      selectionState.selectedIds.clear();
-      selectionState.isSelecting = true;
-    }
-    selectionState.selectedIds.add(chatId);
-    selectionState = selectionState;
-    contextMenu = { show: true, x: event.clientX, y: event.clientY, chatId };
-  }
-
   function loadAppData() {
-    fetchChatList();
     fetchStoryList();
     fetchCharacterList();
   }
@@ -457,10 +440,6 @@
 
   onMount(async () => {
     applyTheme($currentTheme);
-
-    document.addEventListener('click', (e) => {
-        if (contextMenu.show && !(e.target as HTMLElement).closest('.context-menu')) contextMenu.show = false;
-    });
 
     try {
       const cfg = await getConfig();
@@ -476,47 +455,29 @@
 </script>
 
 <main>
-  <TitleBar title={setupComplete ? (chatList.find(c => c.id === currentChatId)?.title ?? 'AI Story Writer') : 'AI Story Writer — Setup'} />
+  <TitleBar title={setupComplete ? (stories.find(s => s.id === selectedStoryId)?.title ?? 'AI Story Writer') : 'AI Story Writer — Setup'} />
 
   {#if !setupComplete}
     <SetupWizard oncomplete={handleSetupComplete} />
   {:else}
   <div class="app-layout">
     <Sidebar
-      {chatList} {currentChatId} {isLoading} {selectionState}
-      onnewchat={startNewChat}
-      ondeleteselected={deleteSelectedChats}
+      {stories}
+      {selectedStoryId}
+      {isLoading}
+      onnewstory={() => { storyToEdit = null; showStoryModal = true; }}
+      onselectstory={(id) => loadSelectedStory(id)}
       onopensettings={() => showSettingsModal = true}
-      onselectchat={(id) => {
-          if (selectionState.isSelecting) {
-              if (selectionState.selectedIds.has(id)) selectionState.selectedIds.delete(id);
-              else selectionState.selectedIds.add(id);
-              if (selectionState.selectedIds.size === 0) selectionState.isSelecting = false;
-              selectionState = selectionState;
-          } else {
-              loadSelectedChat(id);
-          }
-      }}
-      oncontextmenu={handleContextMenu}
-      onselectall={() => {
-          selectionState = { isSelecting: true, selectedIds: new Set(chatList.map(c => c.id)) };
-          contextMenu.show = false;
-      }}
-      onclearselection={() => {
-          selectionState = { isSelecting: false, selectedIds: new Set() };
-          contextMenu.show = false;
-      }}
+      ondeletestory={(id) => deleteStory(id)}
+      oneditstory={(story) => { storyToEdit = story; showStoryModal = true; }}
     />
 
     <div class="main-column">
       <TopBar
-        title={chatList.find(c => c.id === currentChatId)?.title ?? 'AI Story Writer'}
+        title={stories.find(s => s.id === selectedStoryId)?.title ?? 'AI Story Writer'}
         {isLoading}
         hasMessages={messages.length > 0}
-        {configPanelCollapsed}
         onClearChat={clearChat}
-        onGenerateImage={generateCurrentImage}
-        onToggleConfigPanel={() => configPanelCollapsed = !configPanelCollapsed}
         onOpenGallery={() => showGallery = !showGallery}
       />
       {#if showGallery && selectedStoryId && selectedStoryId !== '1'}
@@ -538,64 +499,49 @@
         onregenerated={handleRegenerated}
       />
       {/if}
+
+      {#if pendingSceneTransition}
+        <SceneTransitionSuggestion
+          sceneName={pendingSceneTransition.sceneName}
+          characterNames={pendingSceneTransition.characterNames}
+          onSend={(text) => { pendingSceneTransition = null; sendMessage(text); }}
+          onDismiss={() => pendingSceneTransition = null}
+        />
+      {/if}
     </div>
 
-    <ConfigPanel
-        {stories}
-        {characters}
-        {selectedStoryId}
-        {selectedCharacterIds}
-        collapsed={configPanelCollapsed}
-        onToggleCollapse={(val) => configPanelCollapsed = val}
-        onSelectStory={(id) => {
-            selectedStoryId = id;
-            showGallery = false;
-            fetchCharacterList();
-        }}
-        onToggleCharacter={(id) => toggleCharacterSelection(id)}
-        onCreateStory={() => { storyToEdit = null; showStoryModal = true; }}
-        onEditStory={(story) => { storyToEdit = story; showStoryModal = true; }}
-        onDeleteStory={(id) => deleteStory(id)}
-        onCreateCharacter={() => { characterToEdit = null; showCharModal = true; }}
-        onEditCharacter={(char) => { characterToEdit = char; showCharModal = true; }}
-        onDeleteCharacter={(id) => deleteCharacter(id)}
-        onLinkToStory={async (charId) => {
-                const storyId = parseInt(selectedStoryId, 10);
-                await linkCharacterToStory(charId, storyId);
-                await fetchCharacterList();
-            }}
+    <ScenePanel
+      storyId={selectedStoryId && selectedStoryId !== '1' ? parseInt(selectedStoryId, 10) : null}
+      storyCharacters={characters}
+      collapsed={scenePanelCollapsed}
+      refreshKey={scenePanelRefreshKey}
+      onToggleCollapse={(val) => scenePanelCollapsed = val}
+      onCreateCharacter={() => { characterToEdit = null; showCharModal = true; }}
+      onEditCharacter={(char) => { characterToEdit = char; showCharModal = true; }}
+      onDeleteCharacter={(id) => deleteCharacter(id)}
+      onsceneselected={(sceneId, sceneName, charNames) => {
+        pendingSceneTransition = { sceneName, characterNames: charNames };
+        const storyIdNum = selectedStoryId ? parseInt(selectedStoryId, 10) : null;
+        if (storyIdNum) setSceneHint(storyIdNum, sceneId).catch(e => console.error('[Page] setSceneHint failed:', e));
+      }}
     />
 
-    {#if contextMenu.show}
-      <ContextMenu
-        x={contextMenu.x} y={contextMenu.y} chatId={contextMenu.chatId ?? 0} {selectionState}
-        onclose={() => contextMenu.show = false}
-        ondelete={(id) => { selectionState.selectedIds = new Set([id]); deleteSelectedChats(); }}
-        onselectall={() => { selectionState = { isSelecting: true, selectedIds: new Set(chatList.map(c => c.id)) }; contextMenu.show = false; }}
-        oncancelselection={() => { selectionState = { isSelecting: false, selectedIds: new Set() }; contextMenu.show = false; }}
-        onstartselection={() => {
-            selectionState = { isSelecting: true, selectedIds: new Set([contextMenu.chatId!]) };
-            contextMenu.show = false;
-        }}
-      />
-    {/if}
-
     <CharacterModal
-        show={showCharModal}
-        character={characterToEdit}
-        onsave={handleSaveCharacter}
-        onclose={() => showCharModal = false}
+      show={showCharModal}
+      character={characterToEdit}
+      onsave={handleSaveCharacter}
+      onclose={() => showCharModal = false}
     />
 
     <StoryModal
-        show={showStoryModal} story={storyToEdit}
-        onClose={() => showStoryModal = false}
-        onSave={(form) => handleSaveStory(form)}
+      show={showStoryModal} story={storyToEdit}
+      onClose={() => showStoryModal = false}
+      onSave={(form) => handleSaveStory(form)}
     />
 
     <SettingsModal
-        show={showSettingsModal}
-        onclose={() => showSettingsModal = false}
+      show={showSettingsModal}
+      onclose={() => showSettingsModal = false}
     />
   </div>
   {/if}

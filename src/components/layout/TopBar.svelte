@@ -4,19 +4,13 @@
     title = 'AI Story Writer',
     isLoading = false,
     hasMessages = false,
-    configPanelCollapsed = false,
     onClearChat,
-    onGenerateImage,
-    onToggleConfigPanel,
     onOpenGallery,
   }: {
     title?: string;
     isLoading?: boolean;
     hasMessages?: boolean;
-    configPanelCollapsed?: boolean;
     onClearChat?: () => void;
-    onGenerateImage?: () => void;
-    onToggleConfigPanel?: () => void;
     onOpenGallery?: () => void;
   } = $props();
 </script>
@@ -31,19 +25,6 @@
       onclick={onOpenGallery}
     >
       🖼 Gallery
-    </button>
-    <button
-      class="img-btn"
-      onclick={onGenerateImage}
-      disabled={isLoading || !hasMessages}
-    >
-      🎨 Generate Image
-    </button>
-    <button
-      class="panel-toggle-btn"
-      onclick={onToggleConfigPanel}
-    >
-      {configPanelCollapsed ? '◀ Show Panel' : '▶ Hide Panel'}
     </button>
     <button
       class="clear-btn"
@@ -70,6 +51,7 @@
     display: flex;
     align-items: center;
     gap: 15px;
+    min-width: 0;
   }
 
   h1 {
@@ -80,6 +62,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 400px;
+    flex-shrink: 0;
   }
 
   .topbar-right {
@@ -88,32 +71,6 @@
     gap: 8px;
     flex-shrink: 0;
   }
-
-  .img-btn {
-    background: var(--bg-tertiary);
-    color: var(--accent-primary);
-    border: 1px solid var(--border-active);
-    padding: 6px 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.85em;
-    font-weight: bold;
-    transition: all 0.2s;
-  }
-  .img-btn:hover:not(:disabled) { background: var(--bg-hover); }
-  .img-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .panel-toggle-btn {
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-secondary);
-    padding: 6px 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.85em;
-    transition: all 0.2s;
-  }
-  .panel-toggle-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
   .gallery-btn {
     background: var(--bg-tertiary);

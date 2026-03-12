@@ -8,8 +8,8 @@
     - Settings access
 -->
 <script lang="ts">
-  import { convertFileSrc } from '@tauri-apps/api/core';
   import type { SceneJson, CharacterInScene, OrchestratorCompressionInfo, CharacterProfile } from '$lib/types';
+  import { resolveCharacterImageUrl } from '$lib/utils/character-image';
   import TokenMeter from './TokenMeter.svelte';
 
   export let scene: SceneJson | null = null;
@@ -30,14 +30,23 @@
     return characterProfiles.find(p => p.name.toLowerCase() === char.name.toLowerCase());
   }
 
+  let portraitUrls: Map<number, string | null> = new Map();
+
+  $: {
+    const profiles = characterProfiles;
+    Promise.all(
+      profiles.map(async (p) => {
+        const url = await resolveCharacterImageUrl(p);
+        return [p.id, url] as [number, string | null];
+      })
+    ).then((entries) => {
+      portraitUrls = new Map(entries);
+    });
+  }
+
   function profileImage(profile: CharacterProfile | undefined): string | null {
     if (!profile) return null;
-    if (profile.image) return `data:image/png;base64,${profile.image}`;
-    if (profile.master_image_path) {
-      try { return convertFileSrc(profile.master_image_path); }
-      catch { return null; }
-    }
-    return null;
+    return portraitUrls.get(profile.id) ?? null;
   }
 
   function moodEmoji(mood: string): string {

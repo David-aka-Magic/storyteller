@@ -32,7 +32,7 @@ use crate::text_gen::context::{
 use crate::text_gen::parser::{self as llm_parser, ParseStatus, ParsedTurn, SceneJson};
 use crate::text_gen::prompts::{NUM_CTX, STORY_MODEL, SYSTEM_PROMPT};
 use crate::models::CharacterLookup;
-use crate::state::OllamaState;
+use crate::state::{OllamaState, SceneHintState};
 
 // ============================================================================
 // CONFIGURATION
@@ -100,6 +100,9 @@ pub struct StoryTurnResult {
     /// DB message_id of the assistant message saved for this turn.
     /// Used by the frontend to persist images generated after the turn completes.
     pub assistant_message_id: Option<i64>,
+    /// Scene DB id that is active after this turn (auto-created or matched).
+    /// The frontend uses this to refresh the ScenePanel.
+    pub active_scene_id: Option<i64>,
 }
 
 // ============================================================================
@@ -157,7 +160,7 @@ async fn load_conversation_history(
     Ok(pairs)
 }
 
-/// Load characters for a story (or all characters if no story_id).
+/// Load all characters for a story (or all characters globally if no story_id).
 async fn load_characters_for_context(
     db: &sqlx::SqlitePool,
     story_id: Option<i64>,
@@ -193,6 +196,148 @@ async fn load_characters_for_context(
             default_clothing: r.get("default_clothing"),
         })
         .collect())
+}
+
+/// Load only the characters pinned to the active scene.
+/// Returns an empty vec if scene_id is None or has no characters.
+async fn load_scene_characters_for_context(
+    db: &sqlx::SqlitePool,
+    scene_id: i64,
+) -> Result<Vec<CharacterInfo>, String> {
+    let rows = sqlx::query(
+        "SELECT c.name, c.age, c.gender, c.personality, c.sd_prompt, c.default_clothing \
+         FROM characters c \
+         INNER JOIN scene_characters sc ON sc.character_id = c.id \
+         WHERE sc.scene_id = ? ORDER BY c.name",
+    )
+    .bind(scene_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to load scene characters: {}", e))?;
+
+    Ok(rows
+        .iter()
+        .map(|r| CharacterInfo {
+            name: r.get("name"),
+            age: r.get("age"),
+            gender: r.get("gender"),
+            personality: r.get("personality"),
+            appearance: r.get("sd_prompt"),
+            default_clothing: r.get("default_clothing"),
+        })
+        .collect())
+}
+
+/// Sync the active scene from the LLM's scene_json output.
+/// - Matches an existing scene by location (case-insensitive).
+/// - Auto-creates a new scene if no match is found.
+/// - Syncs scene_characters from the character names in the LLM output.
+/// - Sets story_premises.active_scene_id.
+///
+/// Best-effort: returns Ok(None) if story_id is None or location is empty.
+/// Never propagates errors upward — log and continue.
+async fn sync_scene_from_turn(
+    db: &sqlx::SqlitePool,
+    story_id: i64,
+    scene_json: &SceneJson,
+    character_names: &[String],
+) -> Result<Option<i64>, String> {
+    let location = scene_json.location.trim().to_string();
+    if location.is_empty() {
+        return Ok(None);
+    }
+
+    // 1. Try to match an existing scene by location (case-insensitive)
+    let existing = sqlx::query(
+        "SELECT s.id FROM scenes s \
+         INNER JOIN story_scenes ss ON ss.scene_id = s.id \
+         WHERE ss.story_id = ? AND LOWER(s.location) = LOWER(?)",
+    )
+    .bind(story_id)
+    .bind(&location)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Scene lookup failed: {}", e))?;
+
+    let scene_id: i64 = if let Some(row) = existing {
+        let id: i64 = row.get("id");
+        println!("[Scene] Matched existing scene id={} for location='{}'", id, location);
+        id
+    } else {
+        // 2. Auto-create a new scene using LLM data
+        let result = sqlx::query(
+            "INSERT INTO scenes (name, location, location_type, time_of_day, mood) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&location)           // name = location text
+        .bind(&location)           // location field
+        .bind(&scene_json.location_type)
+        .bind(&scene_json.time_of_day)
+        .bind(&scene_json.mood)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to create scene: {}", e))?;
+
+        let new_id = result.last_insert_rowid();
+        println!("[Scene] Auto-created scene id={} for location='{}'", new_id, location);
+
+        // Link to story
+        sqlx::query("INSERT OR IGNORE INTO story_scenes (story_id, scene_id) VALUES (?, ?)")
+            .bind(story_id)
+            .bind(new_id)
+            .execute(db)
+            .await
+            .map_err(|e| format!("Failed to link scene to story: {}", e))?;
+
+        new_id
+    };
+
+    // 3. Set as active scene for this story
+    sqlx::query("UPDATE story_premises SET active_scene_id = ? WHERE id = ?")
+        .bind(scene_id)
+        .bind(story_id)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to set active scene: {}", e))?;
+
+    // 4. Sync scene_characters from LLM output (clear + re-populate)
+    sqlx::query("DELETE FROM scene_characters WHERE scene_id = ?")
+        .bind(scene_id)
+        .execute(db)
+        .await
+        .ok(); // best-effort
+
+    for name in character_names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Resolve name to character id (story-scoped first, then global fallback)
+        let char_row = sqlx::query(
+            "SELECT c.id FROM characters c \
+             INNER JOIN story_characters sc ON sc.character_id = c.id \
+             WHERE c.name = ? AND sc.story_id = ? LIMIT 1",
+        )
+        .bind(trimmed)
+        .bind(story_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+
+        if let Some(row) = char_row {
+            let char_id: i64 = row.get("id");
+            sqlx::query(
+                "INSERT OR IGNORE INTO scene_characters (scene_id, character_id) VALUES (?, ?)",
+            )
+            .bind(scene_id)
+            .bind(char_id)
+            .execute(db)
+            .await
+            .ok();
+        }
+    }
+
+    Ok(Some(scene_id))
 }
 
 /// Load the active story premise (most recent).
@@ -679,6 +824,7 @@ pub async fn process_story_turn(
     story_id: Option<i64>,
     state: State<'_, OllamaState>,
     config_state: State<'_, ConfigState>,
+    hint_state: State<'_, SceneHintState>,
     app: AppHandle,
 ) -> Result<StoryTurnResult, String> {
     let start_time = std::time::Instant::now();
@@ -687,6 +833,25 @@ pub async fn process_story_turn(
         chat_id, story_id
     );
     println!("[Orchestrator] User input: {:?}", &user_input[..user_input.len().min(80)]);
+
+    // Consume any pending scene hint for this story (one-shot — removed after read)
+    let scene_hint: Option<String> = if let Some(sid) = story_id {
+        let mut hints = hint_state.0.lock().map_err(|e| e.to_string())?;
+        hints.remove(&sid)
+    } else {
+        None
+    };
+
+    if let Some(ref hint) = scene_hint {
+        println!("[SceneHint] Injecting scene hint for story_id={:?}: {}...", story_id, &hint[..hint.len().min(80)]);
+    }
+
+    // Build effective user input — prepend scene hint if present
+    let effective_user_input = if let Some(ref hint) = scene_hint {
+        format!("{}\n\nPlayer action: {}", hint, user_input)
+    } else {
+        user_input.clone()
+    };
 
     // ── Step 1: Build compressed context ─────────────────────────────
 
@@ -709,21 +874,75 @@ pub async fn process_story_turn(
     let full_system_prompt = format!("{}{}", SYSTEM_PROMPT, content_instruction);
 
     let message_rows = load_conversation_history(&state.db, chat_id).await?;
-    let characters = load_characters_for_context(&state.db, story_id).await?;
     let story_premise = load_story_premise(&state.db).await?;
+
+    // Load current active scene (if any) to filter characters and build scene context
+    let prior_active_scene_id: Option<i64> = if let Some(sid) = story_id {
+        sqlx::query("SELECT active_scene_id FROM story_premises WHERE id = ?")
+            .bind(sid)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|row| row.get("active_scene_id"))
+    } else {
+        None
+    };
+
+    // All story characters (full roster, always loaded)
+    let all_characters = load_characters_for_context(&state.db, story_id).await?;
+
+    // Characters in the active scene (for focused LLM context); falls back to all chars
+    let scene_characters = if let Some(scene_id) = prior_active_scene_id {
+        let sc = load_scene_characters_for_context(&state.db, scene_id).await?;
+        if sc.is_empty() { all_characters.clone() } else { sc }
+    } else {
+        all_characters.clone()
+    };
+
+    // Build scene context string from the active scene record
+    let scene_context: Option<String> = if let Some(scene_id) = prior_active_scene_id {
+        sqlx::query(
+            "SELECT name, location, location_type, time_of_day, mood FROM scenes WHERE id = ?",
+        )
+        .bind(scene_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|row| {
+            let name: String = row.get("name");
+            let location: Option<String> = row.get("location");
+            let location_type: Option<String> = row.get("location_type");
+            let time: Option<String> = row.get("time_of_day");
+            let mood: Option<String> = row.get("mood");
+            format!(
+                "CURRENT SCENE: {} | Location: {} ({}) | Time: {} | Mood: {}",
+                name,
+                location.as_deref().unwrap_or("unspecified"),
+                location_type.as_deref().unwrap_or("interior"),
+                time.as_deref().unwrap_or("unspecified"),
+                mood.as_deref().unwrap_or("unspecified"),
+            )
+        })
+    } else {
+        None
+    };
 
     let mut conversation = ConversationContext::from_message_pairs(&message_rows);
 
     let assembled = build_compressed_context(
         &mut conversation,
         &full_system_prompt,
-        &characters,
+        &scene_characters,
+        &all_characters,
         story_premise.as_deref(),
-        &user_input,
+        scene_context.as_deref(),
+        &effective_user_input,
     );
 
     let system_prompt_tokens = estimate_tokens(&full_system_prompt);
-    let char_token_estimate = estimate_character_db_tokens(&characters);
+    let char_token_estimate = estimate_character_db_tokens(&scene_characters);
     let diag = get_diagnostics(&conversation, system_prompt_tokens, char_token_estimate);
 
     let compression_info = OrchestratorCompressionInfo {
@@ -742,13 +961,22 @@ pub async fn process_story_turn(
         context_start.elapsed().as_secs_f64(),
         diag.total_turns,
         diag.estimated_total_tokens,
-        characters.len(),
+        scene_characters.len(),
         assembled.was_compressed,
     );
 
     // ── Step 2: Call Ollama ───────────────────────────────────────────
 
     let ollama_start = std::time::Instant::now();
+
+    println!(
+        "[DEBUG] Ollama request — turns in context: {} ({} recent + {} compressed), prompt chars: {}, num_ctx: {}, num_predict: (not set)",
+        diag.total_turns,
+        diag.recent_turns,
+        diag.compressed_turns,
+        assembled.prompt.len(),
+        NUM_CTX,
+    );
 
     let res = state
         .client
@@ -776,6 +1004,19 @@ pub async fn process_story_turn(
     let response_text = api_res["response"]
         .as_str()
         .ok_or_else(|| "No 'response' field in Ollama API result".to_string())?;
+
+    {
+        let trimmed = response_text.trim_end();
+        let last_char = trimmed.chars().last().unwrap_or('\0');
+        let appears_truncated = !matches!(last_char, '.' | '!' | '?' | '"' | '\'' | '}');
+        println!(
+            "[DEBUG] Ollama response — {:.1}s, {} chars, last_char={:?}, truncated={}",
+            ollama_start.elapsed().as_secs_f64(),
+            response_text.len(),
+            last_char,
+            appears_truncated,
+        );
+    }
 
     println!(
         "[Orchestrator] Ollama responded in {:.1}s ({} chars)",
@@ -844,6 +1085,31 @@ pub async fn process_story_turn(
         characters_in_scene.iter().filter(|c| c.needs_render && c.has_reference_image).count()
     );
 
+    // ── Step 5.5: Sync scene state from LLM output ────────────────────
+    // Best-effort: if story_id is set and the LLM returned scene data,
+    // auto-create/match a scene and sync its characters.
+
+    let post_turn_active_scene_id: Option<i64> = if let (Some(sid), Some(scene_json)) =
+        (story_id, &parsed.turn.scene_json)
+    {
+        let char_names: Vec<String> = parsed
+            .turn
+            .characters_in_scene
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        match sync_scene_from_turn(&state.db, sid, scene_json, &char_names).await {
+            Ok(id) => id,
+            Err(e) => {
+                println!("[Scene] sync_scene_from_turn error (non-fatal): {}", e);
+                prior_active_scene_id
+            }
+        }
+    } else {
+        prior_active_scene_id
+    };
+
     // ── Step 6: Save to database ──────────────────────────────────────
 
     let raw_content =
@@ -880,6 +1146,7 @@ pub async fn process_story_turn(
         image_generation_attempted,
         image_generation_error,
         assistant_message_id,
+        active_scene_id: post_turn_active_scene_id,
     })
 }
 
@@ -911,6 +1178,46 @@ pub async fn generate_scene_image_for_turn(
     println!("[Orchestrator] Querying characters with reference images for story_id={:?}", story_id);
     let all_characters = get_characters_with_references(story_id, &state).await?;
 
+    // Load the active scene for this story (used for character filtering + prompt enhancement)
+    let active_scene_data: Option<(i64, String, Option<String>, Option<String>, Option<String>)> =
+        if let Some(sid) = story_id {
+            sqlx::query(
+                "SELECT s.id, s.location, s.time_of_day, s.mood, s.name \
+                 FROM scenes s \
+                 INNER JOIN story_premises sp ON sp.active_scene_id = s.id \
+                 WHERE sp.id = ?",
+            )
+            .bind(sid)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| {
+                let scene_id: i64 = r.get("id");
+                let location: Option<String> = r.get("location");
+                let time: Option<String> = r.get("time_of_day");
+                let mood: Option<String> = r.get("mood");
+                let name: String = r.get("name");
+                (scene_id, name, location, time, mood)
+            })
+        } else {
+            None
+        };
+
+    // If there's an active scene, load character IDs pinned to it for filtering
+    let scene_char_ids: Option<Vec<i64>> = if let Some((scene_id, ..)) = &active_scene_data {
+        let rows = sqlx::query(
+            "SELECT character_id FROM scene_characters WHERE scene_id = ?",
+        )
+        .bind(scene_id)
+        .fetch_all(&state.db)
+        .await
+        .ok();
+        rows.map(|rs| rs.iter().map(|r| r.get::<i64, _>("character_id")).collect())
+    } else {
+        None
+    };
+
     // If specific scene character names were provided, filter to only those.
     let characters: Vec<CharacterLookup> = if let Some(ref names) = character_names {
         let names_lower: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
@@ -935,6 +1242,32 @@ pub async fn generate_scene_image_for_turn(
         }
     } else {
         all_characters
+    };
+
+    // If the active scene has pinned characters and no explicit names were requested,
+    // filter to only scene members (prevents hallucinated extras from being rendered).
+    let characters: Vec<CharacterLookup> = if character_names.is_none() {
+        if let Some(ref ids) = scene_char_ids {
+            if !ids.is_empty() {
+                let filtered: Vec<CharacterLookup> = characters
+                    .iter()
+                    .filter(|c| ids.contains(&c.id))
+                    .cloned()
+                    .collect();
+                println!(
+                    "[Orchestrator] Scene filter: {} character(s) in active scene (by ID)",
+                    filtered.len()
+                );
+                // If no scene chars have reference images, fall back to unfiltered list
+                if filtered.is_empty() { characters } else { filtered }
+            } else {
+                characters
+            }
+        } else {
+            characters
+        }
+    } else {
+        characters
     };
 
     println!("[Orchestrator] Characters with reference images found: {}", characters.len());
@@ -1068,6 +1401,40 @@ pub async fn generate_scene_image_for_turn(
         };
         char_segments.push(format!("{} {}", region_prefix, char_desc));
     }
+
+    // Append active scene metadata to the prompt as a fallback if the LLM's scene
+    // description doesn't already include it (mood, time, location context).
+    let scene_prompt = if let Some((_, _, ref location, ref time, ref mood)) = active_scene_data {
+        let enhancement_parts: Vec<String> = [
+            location.clone(),
+            time.clone().map(|t| format!("{} lighting", t)),
+            mood.clone().map(|m| format!("{} atmosphere", m)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        if !enhancement_parts.is_empty() {
+            let enhancement = enhancement_parts.join(", ");
+            // Only append if the scene_prompt doesn't already contain these terms
+            let lower_prompt = scene_prompt.to_lowercase();
+            let new_parts: Vec<String> = enhancement_parts
+                .into_iter()
+                .filter(|p| !lower_prompt.contains(&p.to_lowercase()))
+                .collect();
+            if !new_parts.is_empty() {
+                let appended = format!("{}, {}", scene_prompt, new_parts.join(", "));
+                println!("[Orchestrator] Scene enhancement appended: {}", new_parts.join(", "));
+                appended
+            } else {
+                scene_prompt
+            }
+        } else {
+            scene_prompt
+        }
+    } else {
+        scene_prompt
+    };
 
     // Assemble in SDXL priority order:
     //   (quality tags), (POSE:weight), subject_count, scene_description,
@@ -1338,6 +1705,7 @@ pub async fn regenerate_story(
     story_id: Option<i64>,
     state: State<'_, OllamaState>,
     config_state: State<'_, ConfigState>,
+    hint_state: State<'_, SceneHintState>,
     app: AppHandle,
 ) -> Result<StoryTurnResult, String> {
     println!(
@@ -1410,7 +1778,7 @@ pub async fn regenerate_story(
     }
 
     // 4. Re-run the full turn pipeline with the same user input
-    process_story_turn(id, user_input, story_id, state, config_state, app).await
+    process_story_turn(id, user_input, story_id, state, config_state, hint_state, app).await
 }
 
 // ============================================================================

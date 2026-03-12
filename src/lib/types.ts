@@ -53,6 +53,8 @@ export interface StoryPremise {
   id: string;
   title: string;
   description: string;
+  /** The chat_id linked to this story. Populated when loaded via listStories/loadStory. */
+  chat_id?: number;
 }
 
 export interface SelectionState {
@@ -228,6 +230,26 @@ export interface StoryStoreState {
 }
 
 // ============================================================================
+// SCENE
+// ============================================================================
+
+export interface Scene {
+  id: number;
+  name: string;
+  description?: string;
+  location?: string;
+  location_type?: string;
+  time_of_day?: string;
+  mood?: string;
+  created_at: string;
+}
+
+export interface SceneWithCharacters {
+  scene: Scene;
+  characters: CharacterProfile[];
+}
+
+// ============================================================================
 // LLM / PARSING
 // ============================================================================
 
@@ -390,6 +412,8 @@ export interface StoryTurnResult {
   image_generation_error: string | null;
   /** DB message_id of the assistant message saved this turn. Used to persist images later. */
   assistant_message_id: number | null;
+  /** Scene DB id active after this turn (auto-created or matched). Null if no story selected. */
+  active_scene_id: number | null;
 }
 
 // ---- Helpers ----
