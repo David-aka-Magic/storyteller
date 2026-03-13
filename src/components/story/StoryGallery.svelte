@@ -1,8 +1,8 @@
 <!-- src/components/story/StoryGallery.svelte — Image gallery for a story -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { convertFileSrc } from '@tauri-apps/api/core';
   import { getStoryImages } from '$lib/api/story';
+  import { filePathToDataUrl } from '$lib/utils/image-url';
   import type { StoryImage } from '$lib/types';
 
   let {
@@ -21,6 +21,7 @@
   let isLoading = $state(true);
   let error = $state('');
   let selectedImage = $state<StoryImage | null>(null);
+  let imageUrls = $state<Map<number, string | null>>(new Map());
 
   onMount(async () => {
     await loadImages();
@@ -40,13 +41,18 @@
     isLoading = false;
   }
 
-  function assetSrc(path: string): string {
-    try {
-      return convertFileSrc(path) + '?t=' + Date.now();
-    } catch {
-      return path;
-    }
-  }
+  // Resolve file paths to data URIs whenever the images list changes
+  $effect(() => {
+    const imgs = images;
+    Promise.all(
+      imgs.map(async (img) => {
+        const url = await filePathToDataUrl(img.file_path);
+        return [img.id, url] as [number, string | null];
+      })
+    ).then((entries) => {
+      imageUrls = new Map(entries);
+    });
+  });
 
   function openLightbox(img: StoryImage) {
     selectedImage = img;
@@ -108,7 +114,7 @@
       {#each images as img (img.id)}
         <button class="gallery-item" onclick={() => openLightbox(img)}>
           <img
-            src={assetSrc(img.file_path)}
+            src={imageUrls.get(img.id) ?? ''}
             alt={img.caption || 'Scene image'}
             loading="lazy"
           />
@@ -125,7 +131,7 @@
 {#if selectedImage}
   <div class="lightbox" onclick={closeLightbox}>
     <div class="lightbox-content" onclick={(e) => e.stopPropagation()}>
-      <img src={assetSrc(selectedImage.file_path)} alt={selectedImage.caption || 'Scene'} />
+      <img src={imageUrls.get(selectedImage.id) ?? ''} alt={selectedImage.caption || 'Scene'} />
 
       <div class="lightbox-info">
         {#if selectedImage.caption}

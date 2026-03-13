@@ -23,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -450,7 +451,11 @@ fn character_line(c: &CharacterInfo) -> String {
 /// lighter "ALL REGISTERED CHARACTERS" reference list.
 fn build_character_section(characters: &[CharacterInfo]) -> String {
     if characters.is_empty() {
-        return String::new();
+        return "REGISTERED CHARACTERS:\n\
+            None registered yet. You may introduce new characters naturally as the story \
+            requires. Include any characters present in the scene in the \
+            characters_in_scene array using descriptive names.\n"
+            .to_string();
     }
     let mut section = String::from("REGISTERED CHARACTERS:\n");
     for c in characters {
@@ -496,6 +501,42 @@ fn build_dual_character_section(
     section
 }
 
+/// Assemble the final ChatML prompt string from its components.
+/// Extracted so the budget enforcement loop can rebuild cheaply after dropping turns.
+fn assemble_prompt_string(
+    full_system: &str,
+    compressed_summary: &str,
+    recent_turns: &[StoryTurn],
+    current_user_input: &str,
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(&format!("<|im_start|>system\n{}", full_system));
+
+    if !compressed_summary.is_empty() {
+        prompt.push_str(&format!(
+            "\n\n=== STORY SO FAR ===\n{}\n=== END STORY SO FAR ===",
+            compressed_summary
+        ));
+    }
+    prompt.push_str("<|im_end|>");
+
+    for turn in recent_turns {
+        prompt.push_str(&format!("<|im_start|>user\n{}<|im_end|>", turn.user_input));
+        if !turn.assistant_response.is_empty() {
+            let story_text = extract_story_text(&turn.assistant_response);
+            prompt.push_str(&format!("<|im_start|>assistant\n{}<|im_end|>", story_text));
+        }
+    }
+
+    prompt.push_str(&format!(
+        "<|im_start|>user\n{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, generation_flags.]<|im_end|><|im_start|>assistant\n",
+        current_user_input
+    ));
+
+    prompt
+}
+
 /// Build the complete context string using Qwen 3.5's ChatML template format.
 ///
 /// The output uses the `<|im_start|>...<|im_end|>` ChatML format
@@ -525,6 +566,7 @@ pub fn build_compressed_context(
     story_premise: Option<&str>,
     scene_context: Option<&str>,
     current_user_input: &str,
+    max_prompt_tokens: usize,
 ) -> AssembledContext {
     // --- Step 1: Build the system prompt section ---
     let character_section = build_dual_character_section(scene_characters, all_characters);
@@ -551,46 +593,31 @@ pub fn build_compressed_context(
     };
 
     // --- Step 3: Assemble the prompt string ---
-    let mut prompt = String::new();
+    let mut recent_turns: Vec<StoryTurn> = conversation.turns.clone();
+    let compressed_summary = conversation.compressed.story_so_far.clone();
 
-    // System message (includes compressed summary if present)
-    prompt.push_str(&format!(
-        "<|im_start|>system\n{}",
-        full_system
-    ));
+    let mut prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input);
 
-    // Append compressed history to system message if it exists
-    if !conversation.compressed.story_so_far.is_empty() {
-        prompt.push_str(&format!(
-            "\n\n=== STORY SO FAR ===\n{}\n=== END STORY SO FAR ===",
-            conversation.compressed.story_so_far
-        ));
-    }
-    prompt.push_str("<|im_end|>");
-
-    // Recent turns in full detail
-    for turn in &conversation.turns {
-        // User message
-        prompt.push_str(&format!(
-            "<|im_start|>user\n{}<|im_end|>",
-            turn.user_input
-        ));
-        // Assistant message (extract just the story text for context efficiency)
-        if !turn.assistant_response.is_empty() {
-            let story_text = extract_story_text(&turn.assistant_response);
-            prompt.push_str(&format!(
-                "<|im_start|>assistant\n{}<|im_end|>",
-                story_text
-            ));
+    // --- Step 4: Budget enforcement — trim oldest turns until prompt fits ---
+    loop {
+        let estimated = estimate_tokens(&prompt);
+        if estimated <= max_prompt_tokens {
+            break;
         }
+        if recent_turns.is_empty() {
+            println!(
+                "[WARN] Prompt exceeds budget even with 0 history turns ({} tokens > {})",
+                estimated, max_prompt_tokens
+            );
+            break;
+        }
+        let removed = recent_turns.remove(0);
+        println!(
+            "[Context] Budget exceeded ({} tokens > {}), dropping turn {} to fit",
+            estimated, max_prompt_tokens, removed.turn_number
+        );
+        prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input);
     }
-
-    // Current user input
-    prompt.push_str(&format!(
-        "<|im_start|>user\n{}<|im_end|>\
-         <|im_start|>assistant\n",
-        current_user_input
-    ));
 
     let estimated_tokens = estimate_tokens(&prompt);
 
@@ -598,7 +625,7 @@ pub fn build_compressed_context(
         prompt,
         estimated_tokens,
         was_compressed,
-        recent_turn_count: conversation.turns.len(),
+        recent_turn_count: recent_turns.len(),
         compressed_turn_count: conversation.compressed.compressed_turn_ids.len(),
     }
 }
@@ -889,6 +916,7 @@ mod tests {
             Some("A fantasy adventure"),
             None,
             "Look around",
+            5120,
         );
 
         assert!(result.prompt.contains("You are a story engine."));

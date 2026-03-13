@@ -92,6 +92,60 @@ impl fmt::Display for CharacterRegion {
     }
 }
 
+/// Physical pose of a character in the scene.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CharacterPose {
+    Standing,
+    Sitting,
+    LyingDown,
+    Running,
+    Kneeling,
+    Leaning,
+    Driving,
+    Cooking,
+    Fighting,
+    Custom(String),
+}
+
+impl CharacterPose {
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_uppercase().trim() {
+            "STANDING" => Self::Standing,
+            "SITTING" | "SEATED" => Self::Sitting,
+            "LYING-DOWN" | "LYING_DOWN" | "LYING DOWN" | "LYINGDOWN" => Self::LyingDown,
+            "RUNNING" => Self::Running,
+            "KNEELING" => Self::Kneeling,
+            "LEANING" => Self::Leaning,
+            "DRIVING" => Self::Driving,
+            "COOKING" => Self::Cooking,
+            "FIGHTING" => Self::Fighting,
+            "" => Self::Standing,
+            other => Self::Custom(other.to_string()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Standing => "STANDING",
+            Self::Sitting => "SITTING",
+            Self::LyingDown => "LYING-DOWN",
+            Self::Running => "RUNNING",
+            Self::Kneeling => "KNEELING",
+            Self::Leaning => "LEANING",
+            Self::Driving => "DRIVING",
+            Self::Cooking => "COOKING",
+            Self::Fighting => "FIGHTING",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for CharacterPose {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Camera framing for how a character should be rendered.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CharacterView {
@@ -176,6 +230,8 @@ pub struct SceneCharacterRaw {
     #[serde(default)]
     pub view: String,
     #[serde(default)]
+    pub pose: String,
+    #[serde(default)]
     pub action: String,
     #[serde(default)]
     pub expression: String,
@@ -197,6 +253,11 @@ impl SceneCharacterRaw {
             clothing: self.clothing.clone(),
             facing: self.facing.clone(),
         }
+    }
+
+    /// Parse the pose string into a typed enum.
+    pub fn pose_typed(&self) -> CharacterPose {
+        CharacterPose::from_str_loose(&self.pose)
     }
 
     /// Convert to the models::SceneCharacter format for DB lookup compatibility.
@@ -395,6 +456,7 @@ impl ParsedTurn {
                     name: c.name.clone(),
                     region: c.region.clone(),
                     view: c.view.clone(),
+                    pose: c.pose.clone(),
                     action: c.action.clone(),
                     expression: c.expression.clone(),
                     clothing: c.clothing.clone(),
@@ -442,6 +504,7 @@ pub struct FrontendCharacter {
     pub name: String,
     pub region: String,
     pub view: String,
+    pub pose: String,
     pub action: String,
     pub expression: String,
     pub clothing: String,

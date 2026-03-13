@@ -1,58 +1,54 @@
 <!-- src/components/AddCharacterToSceneModal.svelte
-     Picker modal: shows all characters matching the scene's art_style so the
-     user can add an existing character to the active scene. -->
+     Picker modal: shows story characters so the user can add one to the active scene.
+     Receives the story roster directly — no DB fetch needed. -->
 <script lang="ts">
   import type { CharacterProfile } from '$lib/types';
-  import { listCharactersByArtStyle } from '$lib/api/character';
   import { resolveCharacterImageUrl } from '$lib/utils/character-image';
 
   let {
     open,
-    artStyle,
+    storyCharacters,
     excludeIds,
+    title = 'Add Character to Scene',
     onSelect,
     onClose,
   }: {
     open: boolean;
-    artStyle: string | null;
+    storyCharacters: CharacterProfile[];
     excludeIds: number[];
+    title?: string;
     onSelect: (characterId: number) => void;
     onClose: () => void;
   } = $props();
 
-  let characters: CharacterProfile[] = $state([]);
   let portraitUrls: Map<number, string | null> = $state(new Map());
   let search = $state('');
-  let loading = $state(false);
 
-  // Reload character list whenever the modal opens or filter params change
+  // Resolve portraits whenever the modal opens or the roster changes
   $effect(() => {
     if (!open) {
-      characters = [];
       portraitUrls = new Map();
       search = '';
       return;
     }
-    loading = true;
-    listCharactersByArtStyle(artStyle, excludeIds)
-      .then(async (chars) => {
-        characters = chars;
-        const entries = await Promise.all(
-          chars.map(async (c) => {
-            const url = await resolveCharacterImageUrl(c);
-            return [c.id, url] as [number, string | null];
-          })
-        );
-        portraitUrls = new Map(entries);
+    Promise.all(
+      storyCharacters.map(async (c) => {
+        const url = await resolveCharacterImageUrl(c);
+        return [c.id, url] as [number, string | null];
       })
-      .catch((e) => console.error('[AddCharacterToSceneModal] load failed:', e))
-      .finally(() => { loading = false; });
+    ).then((entries) => {
+      portraitUrls = new Map(entries);
+    }).catch((e) => console.error('[AddCharacterToSceneModal] portrait load failed:', e));
   });
+
+  let available = $derived(
+    storyCharacters.filter(c => !excludeIds.includes(c.id))
+  );
 
   let filtered = $derived(
     search.trim()
-      ? characters.filter(c => c.name.toLowerCase().includes(search.trim().toLowerCase()))
-      : characters
+      ? available.filter(c => c.name.toLowerCase().includes(search.trim().toLowerCase()))
+      : available
   );
 
   function pick(id: number) {
@@ -81,7 +77,7 @@
 
   <div class="modal">
     <div class="modal-header">
-      <h2>Add Character to Scene</h2>
+      <h2>{title}</h2>
       <button class="close-btn" onclick={onClose}>✕</button>
     </div>
 
@@ -92,15 +88,10 @@
         bind:value={search}
         autofocus
       />
-      {#if artStyle}
-        <span class="style-badge">{artStyle}</span>
-      {/if}
     </div>
 
     <div class="modal-body">
-      {#if loading}
-        <p class="hint">Loading…</p>
-      {:else if filtered.length === 0}
+      {#if filtered.length === 0}
         <p class="hint">No matching characters found.</p>
       {:else}
         <div class="char-grid">
@@ -204,16 +195,6 @@
     font-family: inherit;
   }
   .search-bar input:focus { border-color: var(--border-active); }
-
-  .style-badge {
-    font-size: 0.7em;
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 4px;
-    padding: 2px 7px;
-    white-space: nowrap;
-  }
 
   .modal-body {
     flex: 1;

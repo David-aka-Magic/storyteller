@@ -21,6 +21,10 @@ pub struct AppConfig {
     #[serde(default = "default_content_rating")]
     pub content_rating: String,
 
+    /// Response length: "short", "medium", or "long"
+    #[serde(default = "default_response_length")]
+    pub response_length: String,
+
     /// Path to the ComfyUI installation directory (set during first-run setup)
     #[serde(default)]
     pub comfyui_path: String,
@@ -34,6 +38,10 @@ fn default_content_rating() -> String {
     "sfw".to_string()
 }
 
+fn default_response_length() -> String {
+    "medium".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -43,6 +51,7 @@ impl Default for AppConfig {
             sd_api_url: "http://127.0.0.1:7860".to_string(),
             auto_start_services: true,
             content_rating: "sfw".to_string(),
+            response_length: "medium".to_string(),
             comfyui_path: String::new(),
             setup_completed: false,
         }

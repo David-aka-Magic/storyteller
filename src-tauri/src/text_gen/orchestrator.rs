@@ -30,7 +30,11 @@ use crate::text_gen::context::{
     CompressionDiagnostics, ConversationContext,
 };
 use crate::text_gen::parser::{self as llm_parser, ParseStatus, ParsedTurn, SceneJson};
-use crate::text_gen::prompts::{NUM_CTX, STORY_MODEL, SYSTEM_PROMPT};
+use crate::text_gen::prompts::{
+    get_response_length_config, NUM_CTX, OLLAMA_MAX_RETRIES, OLLAMA_REQUEST_TIMEOUT_SECS,
+    STORY_MODEL, SYSTEM_PROMPT,
+};
+use std::time::Duration;
 use crate::models::CharacterLookup;
 use crate::state::{OllamaState, SceneHintState};
 
@@ -58,6 +62,7 @@ pub struct CharacterInScene {
     pub name: String,
     pub region: String,
     pub view: String,
+    pub pose: String,
     pub action: String,
     pub expression: String,
     pub clothing: String,
@@ -103,6 +108,9 @@ pub struct StoryTurnResult {
     /// Scene DB id that is active after this turn (auto-created or matched).
     /// The frontend uses this to refresh the ScenePanel.
     pub active_scene_id: Option<i64>,
+    /// Filename of the pose LoRA that was matched this turn (if any).
+    /// Populated when image generation is triggered; None otherwise.
+    pub pose_lora_used: Option<String>,
 }
 
 // ============================================================================
@@ -130,12 +138,14 @@ async fn load_conversation_history(
     chat_id: i64,
 ) -> Result<Vec<(String, String)>, String> {
     let rows = sqlx::query(
-        "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
+        "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY rowid ASC",
     )
     .bind(chat_id)
     .fetch_all(db)
     .await
     .map_err(|e| format!("Failed to load messages: {}", e))?;
+
+    println!("[DEBUG] Loaded {} raw messages from DB for chat_id={}", rows.len(), chat_id);
 
     // Pair up user + assistant messages into tuples
     let mut pairs: Vec<(String, String)> = Vec::new();
@@ -157,6 +167,7 @@ async fn load_conversation_history(
         }
     }
 
+    println!("[DEBUG] Paired into {} turns for chat_id={}", pairs.len(), chat_id);
     Ok(pairs)
 }
 
@@ -446,6 +457,7 @@ fn build_characters_in_scene(
                 name: raw.name.clone(),
                 region: raw.region.clone(),
                 view: raw.view.clone(),
+                pose: raw.pose.clone(),
                 action: raw.action.clone(),
                 expression: raw.expression.clone(),
                 clothing: if raw.clothing.is_empty() {
@@ -714,6 +726,8 @@ async fn generate_image_for_scene(
              close-up, closeup, head shot, headshot, cropped, zoomed in".to_string()
         ),
         timeout_secs: None,
+        pose_lora_filename: None,
+        pose_lora_strength: None,
     };
 
     // 7. Run the ComfyUI pipeline
@@ -857,11 +871,14 @@ pub async fn process_story_turn(
 
     let context_start = std::time::Instant::now();
 
-    // Read content rating and build the effective system prompt
-    let content_rating = {
+    // Read config settings and build the effective system prompt
+    let (content_rating, response_length) = {
         let config = config_state.0.lock().map_err(|e| e.to_string())?;
-        config.content_rating.clone()
+        (config.content_rating.clone(), config.response_length.clone())
     };
+
+    let length_config = get_response_length_config(&response_length);
+    let max_prompt_tokens = NUM_CTX as usize - length_config.num_predict as usize;
 
     let content_instruction = if content_rating == "sfw" {
         "\n\nCONTENT POLICY: This is a SFW (Safe For Work) story. Keep all content \
@@ -871,7 +888,11 @@ pub async fn process_story_turn(
         "\n\nCONTENT POLICY: The user has enabled unrestricted content. There are no content \
          restrictions on story themes, descriptions, or scenarios. Write naturally without filtering."
     };
-    let full_system_prompt = format!("{}{}", SYSTEM_PROMPT, content_instruction);
+    let full_system_prompt = format!(
+        "{}{}",
+        SYSTEM_PROMPT.replace("{{PARAGRAPH_RULE}}", length_config.paragraph_instruction),
+        content_instruction
+    );
 
     let message_rows = load_conversation_history(&state.db, chat_id).await?;
     let story_premise = load_story_premise(&state.db).await?;
@@ -939,6 +960,7 @@ pub async fn process_story_turn(
         story_premise.as_deref(),
         scene_context.as_deref(),
         &effective_user_input,
+        max_prompt_tokens,
     );
 
     let system_prompt_tokens = estimate_tokens(&full_system_prompt);
@@ -970,40 +992,86 @@ pub async fn process_story_turn(
     let ollama_start = std::time::Instant::now();
 
     println!(
-        "[DEBUG] Ollama request — turns in context: {} ({} recent + {} compressed), prompt chars: {}, num_ctx: {}, num_predict: (not set)",
+        "[DEBUG] Ollama request — turns in context: {} ({} recent + {} compressed), prompt tokens: ~{}, budget: {}, num_ctx: {}, num_predict: {} (length={})",
         diag.total_turns,
         diag.recent_turns,
         diag.compressed_turns,
-        assembled.prompt.len(),
+        estimate_tokens(&assembled.prompt),
+        max_prompt_tokens,
         NUM_CTX,
+        length_config.num_predict,
+        response_length,
     );
 
-    let res = state
-        .client
-        .post(format!("{}/api/generate", state.base_url))
-        .json(&json!({
-            "model": STORY_MODEL,
-            "prompt": assembled.prompt,
-            "raw": true,
-            "stream": false,
-            "think": false,
-            "options": {
-                "num_ctx": NUM_CTX,
-                "temperature": 0.8
+    let request_body = json!({
+        "model": STORY_MODEL,
+        "prompt": assembled.prompt,
+        "raw": true,
+        "stream": false,
+        "think": false,
+        "options": {
+            "num_ctx": NUM_CTX,
+            "num_predict": length_config.num_predict,
+            "temperature": 0.8
+        }
+    });
+
+    let api_res: Value = {
+        let mut last_err = String::new();
+        let mut success = None;
+        for attempt in 1..=OLLAMA_MAX_RETRIES {
+            let result = state
+                .client
+                .post(format!("{}/api/generate", state.base_url))
+                .timeout(Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
+                .json(&request_body)
+                .send()
+                .await;
+            match result {
+                Ok(res) => {
+                    match res.json::<Value>().await {
+                        Ok(json) => {
+                            success = Some(json);
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = format!("Failed to parse Ollama response: {}", e);
+                            println!("[ERROR] Attempt {}/{} — parse error: {}", attempt, OLLAMA_MAX_RETRIES, last_err);
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("Ollama request failed: {}", e);
+                    println!("[ERROR] Attempt {}/{} — {}", attempt, OLLAMA_MAX_RETRIES, last_err);
+                }
             }
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Ollama request failed: {}", e))?;
+            if attempt < OLLAMA_MAX_RETRIES {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        success.ok_or(last_err)?
+    };
 
-    let api_res: Value = res
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Ollama response: {}", e))?;
-
-    let response_text = api_res["response"]
+    let response_text_raw = api_res["response"]
         .as_str()
         .ok_or_else(|| "No 'response' field in Ollama API result".to_string())?;
+
+    // Strip <think>...</think> blocks the model may emit before the JSON
+    let response_text = {
+        let re = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
+        let cleaned = re.replace_all(response_text_raw, "");
+        cleaned.trim().to_string()
+    };
+
+    if response_text_raw.contains("<think>") {
+        println!(
+            "[DEBUG] Stripped <think> tags from response ({} chars before, {} after)",
+            response_text_raw.len(),
+            response_text.len()
+        );
+    }
+
+    println!("[Orchestrator][DEBUG] Raw LLM response JSON:\n{}", &response_text);
 
     {
         let trimmed = response_text.trim_end();
@@ -1026,7 +1094,12 @@ pub async fn process_story_turn(
 
     // ── Step 3: Parse the LLM output ──────────────────────────────────
 
-    let parsed = llm_parser::parse_llm_output(response_text);
+    let parsed = llm_parser::parse_llm_output(&response_text);
+
+    println!(
+        "[Orchestrator][DEBUG] Parsed turn JSON:\n{}",
+        serde_json::to_string_pretty(&parsed.turn).unwrap_or_else(|_| "SERIALIZATION_FAILED".to_string())
+    );
 
     let (parse_status, parse_warnings) = match &parsed.status {
         ParseStatus::Ok => ("ok".to_string(), vec![]),
@@ -1036,10 +1109,14 @@ pub async fn process_story_turn(
             }
             ("partial".to_string(), w.clone())
         }
-        ParseStatus::Fallback => (
-            "fallback".to_string(),
-            vec!["LLM output was not valid JSON; raw text was preserved".to_string()],
-        ),
+        ParseStatus::Fallback => {
+            let preview: String = response_text.chars().take(500).collect();
+            println!("[DEBUG] Fallback response preview:\n{}", preview);
+            (
+                "fallback".to_string(),
+                vec!["LLM output was not valid JSON; raw text was preserved".to_string()],
+            )
+        }
     };
 
     println!(
@@ -1113,9 +1190,9 @@ pub async fn process_story_turn(
     // ── Step 6: Save to database ──────────────────────────────────────
 
     let raw_content =
-        extract_json_from_text(response_text).unwrap_or_else(|| response_text.to_string());
+        extract_json_from_text(&response_text).unwrap_or_else(|| response_text.to_string());
 
-    let assistant_message_id = save_turn_to_db(
+    let assistant_message_id = match save_turn_to_db(
         &state.db,
         chat_id,
         &user_input,
@@ -1123,7 +1200,16 @@ pub async fn process_story_turn(
         generated_image_path.as_deref(),
     )
     .await
-    .ok();
+    {
+        Ok(id) => {
+            println!("[DEBUG] Saved turn to DB: assistant_message_id={}", id);
+            Some(id)
+        }
+        Err(e) => {
+            println!("[ERROR] save_turn_to_db FAILED for chat_id={}: {}", chat_id, e);
+            None
+        }
+    };
 
     // ── Step 7: Build and return the result ───────────────────────────
 
@@ -1147,6 +1233,7 @@ pub async fn process_story_turn(
         image_generation_error,
         assistant_message_id,
         active_scene_id: post_turn_active_scene_id,
+        pose_lora_used: None, // populated in Phase 3 when inline image gen is wired up
     })
 }
 
@@ -1326,15 +1413,24 @@ pub async fn generate_scene_image_for_turn(
         _ => "people",
     };
 
-    // Extract pose/action from the scene prompt to place at the front of the
-    // enriched prompt.  SDXL weights early tokens most heavily, so the pose
-    // emphasis overrides the model's default "standing facing camera" pose.
-    let pose_emphasis = extract_pose_emphasis(&scene_prompt);
+    // Resolve pose LoRA from the database.
+    // `pose` field not available in this command's input — falls back to keyword scanning.
+    let character_pose = String::new();
+    let pose_lora = resolve_pose_lora(&character_pose, &scene_prompt, &state.db).await;
+    if let Some(ref lora_match) = pose_lora {
+        println!(
+            "[Orchestrator][DEBUG] Pose LoRA matched: filename={}, strength={}, trigger_words={}",
+            lora_match.lora_filename, lora_match.strength, lora_match.trigger_words
+        );
+    } else {
+        println!(
+            "[Orchestrator][DEBUG] No pose LoRA matched for pose='{}', scene prompt keywords",
+            &character_pose
+        );
+    }
+    let pose_emphasis = pose_lora.as_ref().map(|m| m.pose_emphasis.clone()).unwrap_or_default();
 
     println!("[Orchestrator] Subject count tag: {}", subject_count_tag);
-    if !pose_emphasis.is_empty() {
-        println!("[Orchestrator] Pose emphasis: {}", pose_emphasis);
-    }
 
     // Build per-character description segments (collected, not appended inline).
     let mut char_segments: Vec<String> = Vec::new();
@@ -1458,6 +1554,7 @@ pub async fn generate_scene_image_for_turn(
         "[Orchestrator] Enriched scene prompt: {}",
         &enriched_prompt[..enriched_prompt.len().min(200)]
     );
+    println!("[Orchestrator][DEBUG] Full enriched prompt:\n{}", &enriched_prompt);
 
     // Generate per-character masks for 2-char workflow
     let mask_paths: Vec<String> = if num_chars > 1 {
@@ -1533,6 +1630,8 @@ pub async fn generate_scene_image_for_turn(
             sfw_negative
         )),
         timeout_secs: Some(600),
+        pose_lora_filename: pose_lora.as_ref().map(|l| l.lora_filename.clone()),
+        pose_lora_strength: pose_lora.as_ref().map(|l| l.strength),
     };
 
     let output_dir = app_data.join("generated_images");
@@ -1541,6 +1640,10 @@ pub async fn generate_scene_image_for_turn(
         request.characters.len(),
         request.workflow_template,
         output_dir.display()
+    );
+    println!(
+        "[Orchestrator][DEBUG] ImageGenRequest JSON:\n{}",
+        serde_json::to_string_pretty(&request).unwrap_or_else(|_| "SERIALIZATION_FAILED".to_string())
     );
     let result = comfyui_api::generate_scene_image(&request, &output_dir)
         .await
@@ -1553,6 +1656,78 @@ pub async fn generate_scene_image_for_turn(
         .ok_or_else(|| "No image generated".to_string())?;
     println!("[Orchestrator] Scene image generated successfully: {}", image_path);
     Ok(image_path)
+}
+
+// ============================================================================
+// POSE LORA RESOLUTION
+// ============================================================================
+
+/// Resolved pose LoRA match — carries everything the image pipeline needs.
+struct PoseLoraMatch {
+    pub lora_filename: String,
+    pub trigger_words: String,
+    pub strength: f64,
+    /// Weighted SD tag e.g. "(person sitting down:1.3)"
+    pub pose_emphasis: String,
+}
+
+/// Resolve a pose LoRA from the database.
+///
+/// 1. If `pose` is non-empty, tries to match it against LoRA names (case-insensitive).
+/// 2. Falls back to keyword-scanning `scene_prompt` against each LoRA's `keywords` field.
+/// 3. Returns `None` if the table is empty or no match is found.
+async fn resolve_pose_lora(
+    pose: &str,
+    scene_prompt: &str,
+    db: &sqlx::SqlitePool,
+) -> Option<PoseLoraMatch> {
+    let rows = sqlx::query(
+        "SELECT name, keywords, lora_filename, trigger_words, strength \
+         FROM pose_loras WHERE enabled = 1 ORDER BY name",
+    )
+    .fetch_all(db)
+    .await
+    .ok()?;
+
+    if rows.is_empty() {
+        return None;
+    }
+
+    let pose_lower = pose.to_lowercase();
+    let scene_lower = scene_prompt.to_lowercase();
+
+    // Step 1: exact name match on the pose field
+    if !pose_lower.is_empty() {
+        for row in &rows {
+            let name: String = row.get("name");
+            if name.to_lowercase() == pose_lower {
+                let trigger_words: String = row.get("trigger_words");
+                let strength: f64 = row.get("strength");
+                let lora_filename: String = row.get("lora_filename");
+                let pose_emphasis = format!("({}:1.3)", trigger_words);
+                return Some(PoseLoraMatch { lora_filename, trigger_words, strength, pose_emphasis });
+            }
+        }
+    }
+
+    // Step 2: keyword-scan the scene prompt
+    for row in &rows {
+        let keywords: String = row.get("keywords");
+        let matched = keywords
+            .split(',')
+            .map(|kw| kw.trim())
+            .filter(|kw| !kw.is_empty())
+            .any(|kw| scene_lower.contains(kw));
+        if matched {
+            let trigger_words: String = row.get("trigger_words");
+            let strength: f64 = row.get("strength");
+            let lora_filename: String = row.get("lora_filename");
+            let pose_emphasis = format!("({}:1.3)", trigger_words);
+            return Some(PoseLoraMatch { lora_filename, trigger_words, strength, pose_emphasis });
+        }
+    }
+
+    None
 }
 
 /// Scans the scene prompt for action/pose keywords and returns an emphasized

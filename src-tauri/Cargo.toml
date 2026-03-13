@@ -26,6 +26,7 @@ base64 = "0.21"
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
 urlencoding = "2.1"
 rand = "0.8"
+regex = "1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

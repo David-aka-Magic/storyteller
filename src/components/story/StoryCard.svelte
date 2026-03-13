@@ -5,8 +5,8 @@
   Dispatches: 'select' (load & play), 'delete' (with story_id)
 -->
 <script lang="ts">
-  import { convertFileSrc } from '@tauri-apps/api/core';
   import type { StorySummary } from '$lib/types';
+  import { filePathToDataUrl } from '$lib/utils/image-url';
 
   export let story: StorySummary;
 
@@ -16,13 +16,15 @@
   // ── Thumbnail handling ──
   let thumbLoaded = false;
   let thumbError = false;
-
-  function assetSrc(path: string): string {
-    try { return convertFileSrc(path); }
-    catch { return path; }
-  }
+  let resolvedThumb: string | null = null;
 
   $: hasThumbnail = !!story.thumbnail_path;
+
+  $: if (story.thumbnail_path) {
+    filePathToDataUrl(story.thumbnail_path).then(url => { resolvedThumb = url; });
+  } else {
+    resolvedThumb = null;
+  }
 
   // ── Relative time ──
   function relativeTime(isoDate: string): string {
@@ -73,7 +75,7 @@
   <div class="card-thumbnail" style={!hasThumbnail || thumbError ? `background: ${placeholderGradient(story.title)}` : ''}>
     {#if hasThumbnail && !thumbError}
       <img
-        src={assetSrc(story.thumbnail_path ?? '')}
+        src={resolvedThumb ?? ''}
         alt={story.title}
         class="thumb-img"
         class:loaded={thumbLoaded}

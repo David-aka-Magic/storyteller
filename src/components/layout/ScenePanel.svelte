@@ -22,6 +22,7 @@
   let {
     storyId = null as number | null,
     storyCharacters = [] as CharacterProfile[],
+    allCharacters = [] as CharacterProfile[],
     collapsed = false,
     refreshKey = 0,
     onToggleCollapse,
@@ -29,9 +30,11 @@
     onEditCharacter,
     onDeleteCharacter,
     onsceneselected,
+    onaddcharactertostory,
   }: {
     storyId?: number | null;
     storyCharacters?: CharacterProfile[];
+    allCharacters?: CharacterProfile[];
     collapsed?: boolean;
     /** Increment to force a reload (e.g. after auto-scene-sync from a turn). */
     refreshKey?: number;
@@ -41,6 +44,7 @@
     onDeleteCharacter?: (id: number) => void;
     /** Called when the user manually clicks a scene to activate it. */
     onsceneselected?: (sceneId: number, sceneName: string, characterNames: string[]) => void;
+    onaddcharactertostory?: (characterId: number) => void;
   } = $props();
 
   let scenes: Scene[] = $state([]);
@@ -51,12 +55,20 @@
   let showSceneModal = $state(false);
   let sceneToEdit: Scene | null = $state(null);
   let showAddExistingModal = $state(false);
+  let showAddToStoryModal = $state(false);
 
-  // ── Resolve portrait URLs whenever storyCharacters changes ───────────────
+  // ── Resolve portrait URLs whenever storyCharacters or allCharacters changes ─
   $effect(() => {
-    const chars = storyCharacters;
+    const storySet = storyCharacters;
+    const allSet = allCharacters;
+    // Deduplicate by id
+    const seen = new Set<number>();
+    const combined: CharacterProfile[] = [];
+    for (const c of [...storySet, ...allSet]) {
+      if (!seen.has(c.id)) { seen.add(c.id); combined.push(c); }
+    }
     Promise.all(
-      chars.map(async (c) => {
+      combined.map(async (c) => {
         const url = await resolveCharacterImageUrl(c);
         return [c.id, url] as [number, string | null];
       })
@@ -158,13 +170,6 @@
     }
   }
 
-  function getSceneArtStyle(): string | null {
-    if (sceneCharacters.length === 0) return null;
-    const styles = new Set(sceneCharacters.map(c => c.art_style).filter(Boolean));
-    if (styles.size === 1) return [...styles][0] ?? null;
-    return null;
-  }
-
   async function handleAddExistingCharacter(characterId: number) {
     if (activeSceneId == null) return;
     try {
@@ -190,7 +195,7 @@
   {#if !collapsed}
     <!-- ── Header ─────────────────────────────────────────── -->
     <div class="panel-header">
-      <span class="panel-title">Scenes</span>
+      <span class="panel-title">Scenes & Characters</span>
     </div>
 
     {#if storyId == null}
@@ -230,55 +235,107 @@
         {/if}
       </section>
 
-      <!-- ── Characters in active scene ───────────────────── -->
+      <!-- ── Characters ─────────────────────────────────────── -->
       <section class="section">
         <div class="section-header">
           <span class="section-title">
-            {activeSceneId != null ? 'Characters in Scene' : 'Characters'}
+            {activeSceneId != null ? 'In This Scene' : 'Story Cast'}
           </span>
           <div class="header-actions">
             {#if activeSceneId != null}
               <button
                 class="add-btn"
                 onclick={() => { showAddExistingModal = true; }}
-                title="Add an existing character to this scene"
+                title="Add a story character to this scene"
+              >+ Add</button>
+            {:else}
+              <button
+                class="add-btn"
+                onclick={() => { showAddToStoryModal = true; }}
+                title="Add an existing character to this story"
               >+ Existing</button>
             {/if}
             <button class="add-btn" onclick={onCreateCharacter}>+ New</button>
           </div>
         </div>
 
-        {#if storyCharacters.length === 0}
-          <p class="empty-hint">No characters for this story.</p>
-        {:else}
-          <div class="char-grid">
-            {#each storyCharacters as char (char.id)}
-              {@const inScene = sceneCharacters.some(c => c.id === char.id)}
-              {@const portrait = portraitUrls.get(char.id) ?? null}
-              <div class="char-tile" class:in-scene={inScene}>
-                <button
-                  class="char-portrait"
-                  onclick={() => activeSceneId != null && toggleCharacterInScene(char.id)}
-                  title={activeSceneId != null ? (inScene ? 'Remove from scene' : 'Add to scene') : 'Select an active scene first'}
-                  disabled={activeSceneId == null}
-                >
-                  {#if portrait}
-                    <img src={portrait} alt={char.name} />
-                  {:else}
-                    <span class="initials">{initials(char.name)}</span>
-                  {/if}
-                  {#if inScene}
+        {#if activeSceneId != null}
+          <!-- Characters pinned to this scene -->
+          {#if sceneCharacters.length === 0}
+            <p class="empty-hint">No characters in this scene. Add from story cast below.</p>
+          {:else}
+            <div class="char-grid">
+              {#each sceneCharacters as char (char.id)}
+                {@const portrait = portraitUrls.get(char.id) ?? null}
+                <div class="char-tile in-scene">
+                  <button
+                    class="char-portrait"
+                    onclick={() => toggleCharacterInScene(char.id)}
+                    title="Remove from scene"
+                  >
+                    {#if portrait}
+                      <img src={portrait} alt={char.name} />
+                    {:else}
+                      <span class="initials">{initials(char.name)}</span>
+                    {/if}
                     <span class="scene-badge">✓</span>
-                  {/if}
-                </button>
-                <span class="char-name">{char.name}</span>
-                <div class="char-actions">
-                  <button class="icon-btn small" onclick={() => onEditCharacter?.(char)} title="Edit">✏</button>
-                  <button class="icon-btn small danger" onclick={() => onDeleteCharacter?.(char.id)} title="Delete">✕</button>
+                  </button>
+                  <span class="char-name">{char.name}</span>
                 </div>
-              </div>
-            {/each}
-          </div>
+              {/each}
+            </div>
+          {/if}
+
+          <!-- Available story characters not yet in this scene -->
+          {@const availableChars = storyCharacters.filter(c => !sceneCharacters.some(sc => sc.id === c.id))}
+          {#if availableChars.length > 0}
+            <div class="subsection-header">
+              <span class="subsection-title">Available</span>
+            </div>
+            <div class="char-grid available">
+              {#each availableChars as char (char.id)}
+                {@const portrait = portraitUrls.get(char.id) ?? null}
+                <div class="char-tile">
+                  <button
+                    class="char-portrait"
+                    onclick={() => toggleCharacterInScene(char.id)}
+                    title="Add to scene"
+                  >
+                    {#if portrait}
+                      <img src={portrait} alt={char.name} />
+                    {:else}
+                      <span class="initials">{initials(char.name)}</span>
+                    {/if}
+                  </button>
+                  <span class="char-name">{char.name}</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {:else}
+          <!-- No active scene — show full story cast -->
+          {#if storyCharacters.length === 0}
+            <p class="empty-hint">No characters for this story.</p>
+          {:else}
+            <div class="char-grid">
+              {#each storyCharacters as char (char.id)}
+                {@const portrait = portraitUrls.get(char.id) ?? null}
+                <div class="char-tile">
+                  <div class="char-portrait static">
+                    {#if portrait}
+                      <img src={portrait} alt={char.name} />
+                    {:else}
+                      <span class="initials">{initials(char.name)}</span>
+                    {/if}
+                  </div>
+                  <span class="char-name">{char.name}</span>
+                  <div class="char-actions">
+                    <button class="icon-btn small" onclick={() => onEditCharacter?.(char)} title="Edit">✏</button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
         {/if}
       </section>
     {/if}
@@ -294,11 +351,47 @@
 
 <AddCharacterToSceneModal
   open={showAddExistingModal}
-  artStyle={getSceneArtStyle()}
+  storyCharacters={storyCharacters}
   excludeIds={sceneCharacters.map(c => c.id)}
   onSelect={handleAddExistingCharacter}
   onClose={() => { showAddExistingModal = false; }}
 />
+
+{#if showAddToStoryModal}
+  {@const storyCharIds = new Set(storyCharacters.map(c => c.id))}
+  {@const unlinked = allCharacters.filter(c => !storyCharIds.has(c.id))}
+  <div class="add-to-story-backdrop" onclick={() => { showAddToStoryModal = false; }} role="presentation">
+    <div class="add-to-story-modal" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Add character to story">
+      <div class="ats-header">
+        <span class="ats-title">Add to Story</span>
+        <button class="icon-btn" onclick={() => { showAddToStoryModal = false; }} title="Close">✕</button>
+      </div>
+      {#if unlinked.length === 0}
+        <p class="empty-hint">All characters are already in this story.</p>
+      {:else}
+        <div class="ats-grid">
+          {#each unlinked as char (char.id)}
+            {@const portrait = portraitUrls.get(char.id) ?? null}
+            <button
+              class="ats-tile"
+              onclick={() => { onaddcharactertostory?.(char.id); showAddToStoryModal = false; }}
+              title="Add {char.name} to story"
+            >
+              <div class="ats-portrait">
+                {#if portrait}
+                  <img src={portrait} alt={char.name} />
+                {:else}
+                  <span class="initials">{initials(char.name)}</span>
+                {/if}
+              </div>
+              <span class="char-name">{char.name}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   /* ── Collapse tab (shared by both states) ────────────────── */
@@ -519,9 +612,13 @@
     transition: border-color 0.15s;
     padding: 0;
   }
-  .char-portrait:hover:not(:disabled) { border-color: var(--accent-primary); }
-  .char-portrait:disabled { cursor: default; opacity: 0.6; }
+  .char-portrait:hover:not(.static) { border-color: var(--accent-primary); }
   .in-scene .char-portrait { border-color: var(--accent-primary); }
+
+  /* Non-interactive portrait (story cast when no scene active) */
+  .char-portrait.static {
+    cursor: default;
+  }
 
   .char-portrait img {
     width: 100%;
@@ -569,6 +666,31 @@
   }
   .char-tile:hover .char-actions { opacity: 1; }
 
+  /* ── Available subgroup ──────────────────────────────────── */
+  .subsection-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px 4px;
+    flex-shrink: 0;
+  }
+
+  .subsection-title {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted, #6e7681);
+  }
+
+  .char-grid.available {
+    padding-top: 0;
+    flex: 0 0 auto;
+    overflow-y: visible;
+  }
+
+  .char-grid.available .char-tile { opacity: 0.6; }
+  .char-grid.available .char-tile:hover { opacity: 1; }
+
   /* ── Shared ──────────────────────────────────────────────── */
   .icon-btn {
     background: none;
@@ -583,4 +705,86 @@
   .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .icon-btn.small { font-size: 0.75em; padding: 2px 4px; }
   .icon-btn.danger:hover { color: var(--accent-danger); }
+
+  /* ── Add-to-story inline modal ───────────────────────────── */
+  .add-to-story-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .add-to-story-modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    width: 320px;
+    max-height: 420px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .ats-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-primary);
+    flex-shrink: 0;
+  }
+
+  .ats-title {
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .ats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    gap: 8px;
+    padding: 10px 12px;
+    overflow-y: auto;
+  }
+
+  .ats-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    transition: background 0.15s;
+  }
+  .ats-tile:hover { background: var(--bg-hover); }
+
+  .ats-portrait {
+    width: 56px;
+    height: 56px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 2px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.15s;
+  }
+  .ats-tile:hover .ats-portrait { border-color: var(--accent-primary); }
+
+  .ats-portrait img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
 </style>

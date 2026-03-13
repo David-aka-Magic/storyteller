@@ -3,8 +3,10 @@
   import Modal from '../shared/Modal.svelte';
   import ThemeSettings from './ThemeSettings.svelte';
   import ContentSettings from './ContentSettings.svelte';
+  import WritingSettings from './WritingSettings.svelte';
   import ServiceSettings from './ServiceSettings.svelte';
   import AboutSection from './AboutSection.svelte';
+  import PoseLoraManager from './PoseLoraManager.svelte';
 
   let {
     show = false,
@@ -14,13 +16,20 @@
     onclose?: () => void;
   } = $props();
 
-  type Tab = 'theme' | 'content' | 'services' | 'about';
-  let activeTab: Tab = $state('theme');
+  type Tab = 'writing' | 'theme' | 'content' | 'services' | 'poseloras' | 'about';
+  let activeTab: Tab = $state('writing');
 </script>
 
 {#if show}
   <Modal title="⚙️ Settings" {onclose}>
     <div class="tabs">
+      <button
+        class="tab-btn"
+        class:active={activeTab === 'writing'}
+        onclick={() => (activeTab = 'writing')}
+      >
+        ✍️ Writing
+      </button>
       <button
         class="tab-btn"
         class:active={activeTab === 'theme'}
@@ -44,6 +53,13 @@
       </button>
       <button
         class="tab-btn"
+        class:active={activeTab === 'poseloras'}
+        onclick={() => (activeTab = 'poseloras')}
+      >
+        🎭 Pose LoRAs
+      </button>
+      <button
+        class="tab-btn"
         class:active={activeTab === 'about'}
         onclick={() => (activeTab = 'about')}
       >
@@ -52,6 +68,9 @@
     </div>
 
     <div class="tab-content">
+      {#if activeTab === 'writing'}
+        <WritingSettings />
+      {/if}
       {#if activeTab === 'theme'}
         <ThemeSettings />
       {/if}
@@ -60,6 +79,9 @@
       {/if}
       {#if activeTab === 'services'}
         <ServiceSettings />
+      {/if}
+      {#if activeTab === 'poseloras'}
+        <PoseLoraManager />
       {/if}
       {#if activeTab === 'about'}
         <AboutSection />

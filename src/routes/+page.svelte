@@ -19,6 +19,7 @@
   import { newChat, loadChat, clearHistory, setChatCharacter, saveImageForMessage } from '$lib/api/chat';
   import {
     listCharactersForStory,
+    listAllCharacters,
     addCharacter, updateCharacter,
     deleteCharacter as apiDeleteCharacter,
     linkCharacterToStory,
@@ -26,6 +27,7 @@
   import { listStories, loadStory, createStory, saveStoryPremise, deleteStory as apiDeleteStory } from '$lib/api/story';
   import { getConfig } from '$lib/api/config';
   import { setSceneHint } from '$lib/api/scene';
+  import { seedDefaultPoseLoras } from '$lib/api/pose-loras';
 
   import type {
     ChatMessage, SdDetails,
@@ -39,6 +41,7 @@
   let showCharModal = false;
   let characterToEdit: CharacterProfile | null = null;
   let characters: CharacterProfile[] = [];
+  let allCharacters: CharacterProfile[] = [];
   let selectedCharacterIds: Set<number> = new Set();
 
   let showStoryModal = false;
@@ -370,7 +373,10 @@
       const storyId = selectedStoryId && selectedStoryId !== '1'
         ? parseInt(selectedStoryId, 10)
         : null;
-      characters = await listCharactersForStory(storyId ?? undefined);
+      [characters, allCharacters] = await Promise.all([
+        listCharactersForStory(storyId ?? undefined),
+        listAllCharacters(),
+      ]);
     } catch (e) { console.error(e); }
   }
 
@@ -450,6 +456,7 @@
 
     if (setupComplete) {
       loadAppData();
+      seedDefaultPoseLoras().catch(() => {}); // no-op if table already populated
     }
   });
 </script>
@@ -513,6 +520,7 @@
     <ScenePanel
       storyId={selectedStoryId && selectedStoryId !== '1' ? parseInt(selectedStoryId, 10) : null}
       storyCharacters={characters}
+      {allCharacters}
       collapsed={scenePanelCollapsed}
       refreshKey={scenePanelRefreshKey}
       onToggleCollapse={(val) => scenePanelCollapsed = val}
@@ -524,6 +532,7 @@
         const storyIdNum = selectedStoryId ? parseInt(selectedStoryId, 10) : null;
         if (storyIdNum) setSceneHint(storyIdNum, sceneId).catch(e => console.error('[Page] setSceneHint failed:', e));
       }}
+      onaddcharactertostory={handleLinkToStory}
     />
 
     <CharacterModal

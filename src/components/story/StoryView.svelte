@@ -40,6 +40,7 @@
   } from '$lib/types';
   import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
   import { saveImageForMessage } from '$lib/api/chat';
+  import { clearImageCache } from '$lib/utils/image-url';
 
   import {
     currentStory,
@@ -308,6 +309,8 @@
     try {
       // Build a concise visual prompt from scene data rather than passing the full narrative
       const turn = turns.find(t => t.turnNumber === turnNumber);
+      // Clear stale cache entry so the new image isn't served from cache
+      if (turn?.imagePath) clearImageCache(turn.imagePath);
       const scenePrompt = buildScenePrompt(turn?.scene ?? null, storyText);
       const imagePath = await generateSceneImageForTurn(scenePrompt, storyId ?? undefined);
 

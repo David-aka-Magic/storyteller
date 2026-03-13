@@ -173,6 +173,74 @@ pub(super) fn build_workflow_modifications(
 }
 
 // ============================================================================
+// POSE LORA INJECTION
+// ============================================================================
+
+/// Inject a LoraLoader node into the workflow for pose LoRAs.
+/// This rewires the model/CLIP chain: Checkpoint → LoraLoader → KSampler/CLIP.
+/// Uses node ID "50" for the LoraLoader to avoid conflicts with existing nodes.
+pub(super) fn inject_pose_lora(
+    workflow: &mut Value,
+    lora_filename: &str,
+    strength: f64,
+) -> Result<(), ComfyError> {
+    let obj = workflow
+        .as_object_mut()
+        .ok_or_else(|| ComfyError::WorkflowLoadFailed("Workflow root is not an object".into()))?;
+
+    // 1. Insert the LoraLoader node
+    let lora_node = serde_json::json!({
+        "class_type": "LoraLoader",
+        "inputs": {
+            "model": ["1", 0],
+            "clip": ["1", 1],
+            "lora_name": lora_filename,
+            "strength_model": strength,
+            "strength_clip": strength
+        }
+    });
+    obj.insert("50".to_string(), lora_node);
+
+    // 2. Rewire KSampler (node "35") to take model from LoraLoader instead of Checkpoint
+    if let Some(node_35) = obj.get_mut("35") {
+        if let Some(inputs) = node_35.get_mut("inputs") {
+            if let Some(model_input) = inputs.get_mut("model") {
+                if model_input
+                    .as_array()
+                    .map(|a| a.first().and_then(|v| v.as_str()) == Some("1"))
+                    .unwrap_or(false)
+                {
+                    *model_input = serde_json::json!(["50", 0]);
+                }
+            }
+        }
+    }
+
+    // 3. Rewire CLIP text encode nodes ("2" positive, "3" negative) to use LoRA's CLIP
+    for clip_node_id in &["2", "3"] {
+        if let Some(node) = obj.get_mut(*clip_node_id) {
+            if let Some(inputs) = node.get_mut("inputs") {
+                if let Some(clip_input) = inputs.get_mut("clip") {
+                    if clip_input
+                        .as_array()
+                        .map(|a| a.first().and_then(|v| v.as_str()) == Some("1"))
+                        .unwrap_or(false)
+                    {
+                        *clip_input = serde_json::json!(["50", 1]);
+                    }
+                }
+            }
+        }
+    }
+
+    println!(
+        "[ComfyUI] Injected LoraLoader node 50: lora={}, strength={}",
+        lora_filename, strength
+    );
+    Ok(())
+}
+
+// ============================================================================
 // TESTS
 // ============================================================================
 
@@ -261,6 +329,8 @@ mod tests {
             height: Some(896),
             negative_prompt: None,
             timeout_secs: None,
+            pose_lora_filename: None,
+            pose_lora_strength: None,
         };
 
         let uploaded_refs = vec!["ref_alice_0.png".to_string()];

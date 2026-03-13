@@ -8,8 +8,8 @@
     - Parse warnings (if any)
 -->
 <script lang="ts">
-  import { convertFileSrc } from '@tauri-apps/api/core';
   import type { CharacterInScene, SceneJson } from '$lib/types';
+  import { filePathToDataUrl } from '$lib/utils/image-url';
   import ImageLightbox from '../shared/ImageLightbox.svelte';
 
   export let turnNumber: number = 0;
@@ -32,15 +32,6 @@
   /** If set, shows a scene-change marker above this turn. */
   export let sceneTransition: { location: string; timeOfDay?: string; mood?: string } | null = null;
 
-  /** Convert an absolute file path to a Tauri asset URL */
-  function assetSrc(path: string): string {
-    try {
-      return convertFileSrc(path) + '?t=' + Date.now();
-    } catch {
-      return path;
-    }
-  }
-
   /** Format narrative text: handle paragraph breaks and dialogue */
   function formatNarrative(text: string): string[] {
     if (!text) return [];
@@ -55,9 +46,20 @@
     return /^[""\u201C]/.test(paragraph.trim()) || /^[A-Z][a-z]+\s*:/.test(paragraph.trim());
   }
 
+  let resolvedImageUrl: string | null = null;
   let imageLoaded = false;
   let imageLoadError = false;
   let showLightbox = false;
+
+  $: if (imagePath) {
+    filePathToDataUrl(imagePath).then(url => {
+      resolvedImageUrl = url;
+      imageLoaded = false;
+      imageLoadError = false;
+    });
+  } else {
+    resolvedImageUrl = null;
+  }
 
   function handleImageLoad() {
     imageLoaded = true;
@@ -132,7 +134,7 @@
           </div>
         {:else}
           <img
-            src={assetSrc(imagePath)}
+            src={resolvedImageUrl ?? ''}
             alt="Scene: {scene?.location || 'Story scene'}"
             class="scene-image"
             class:visible={imageLoaded}
@@ -232,9 +234,9 @@
   </div>
 </div>
 
-{#if showLightbox && imagePath}
+{#if showLightbox && resolvedImageUrl}
   <ImageLightbox
-    src={assetSrc(imagePath)}
+    src={resolvedImageUrl}
     alt="Scene: {scene?.location || 'Story scene'}"
     onclose={() => showLightbox = false}
   />

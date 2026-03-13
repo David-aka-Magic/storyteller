@@ -65,6 +65,12 @@ pub struct ImageGenRequest {
     /// Optional: timeout in seconds for generation polling.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Optional: pose LoRA filename (e.g. "sitting_pose.safetensors")
+    #[serde(default)]
+    pub pose_lora_filename: Option<String>,
+    /// Optional: pose LoRA strength (0.0-1.0)
+    #[serde(default)]
+    pub pose_lora_strength: Option<f64>,
 }
 
 /// Result of a successful image generation.
@@ -142,6 +148,18 @@ pub async fn generate_scene_image(
     let modifications = build_workflow_modifications(request, &uploaded_refs, &uploaded_masks);
     modify_workflow(&mut workflow, &modifications)?;
     println!("[ComfyUI] Workflow prepared with {} modifications", modifications.len());
+
+    // Inject pose LoRA if specified
+    if let Some(ref lora_file) = request.pose_lora_filename {
+        let strength = request.pose_lora_strength.unwrap_or(0.7);
+        super::workflow::inject_pose_lora(&mut workflow, lora_file, strength)?;
+    }
+
+    println!(
+        "[ComfyUI][DEBUG] Final workflow JSON:\n{}",
+        serde_json::to_string_pretty(&workflow)
+            .unwrap_or_else(|_| "SERIALIZATION_FAILED".to_string())
+    );
 
     // 4. Queue
     let prompt_id = queue_prompt(base_url, &workflow).await?;

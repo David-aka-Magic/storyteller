@@ -188,3 +188,16 @@ pub struct Img2ImgRequest {
     pub sampler_name: String,
     pub batch_size: u32,
 }
+
+/// A user-defined pose LoRA configuration.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PoseLora {
+    pub id: i64,
+    pub name: String,
+    pub keywords: String,
+    pub lora_filename: String,
+    pub trigger_words: String,
+    pub strength: f64,
+    pub enabled: bool,
+    pub created_at: String,
+}

@@ -7,6 +7,7 @@ export interface AppConfig {
   sd_api_url: string;
   auto_start_services: boolean;
   content_rating: 'sfw' | 'nsfw';
+  response_length: 'short' | 'medium' | 'long';
   comfyui_path: string;
   setup_completed: boolean;
 }
