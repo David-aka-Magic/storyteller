@@ -20,12 +20,14 @@ export async function processStoryTurn(
 export async function generateSceneImageForTurn(
   scenePrompt: string,
   storyId?: number,
-  characterNames?: string[]
+  characterNames?: string[],
+  characterPoses?: string[]
 ): Promise<string> {
   return invoke('generate_scene_image_for_turn', {
     scenePrompt,
     storyId: storyId ?? null,
     characterNames: (characterNames && characterNames.length > 0) ? characterNames : null,
+    characterPoses: (characterPoses && characterPoses.length > 0) ? characterPoses : null,
   });
 }
 

@@ -108,9 +108,6 @@ pub struct StoryTurnResult {
     /// Scene DB id that is active after this turn (auto-created or matched).
     /// The frontend uses this to refresh the ScenePanel.
     pub active_scene_id: Option<i64>,
-    /// Filename of the pose LoRA that was matched this turn (if any).
-    /// Populated when image generation is triggered; None otherwise.
-    pub pose_lora_used: Option<String>,
 }
 
 // ============================================================================
@@ -726,8 +723,8 @@ async fn generate_image_for_scene(
              close-up, closeup, head shot, headshot, cropped, zoomed in".to_string()
         ),
         timeout_secs: None,
-        pose_lora_filename: None,
-        pose_lora_strength: None,
+        controlnet_image_path: None,
+        controlnet_strength: None,
     };
 
     // 7. Run the ComfyUI pipeline
@@ -1233,7 +1230,6 @@ pub async fn process_story_turn(
         image_generation_error,
         assistant_message_id,
         active_scene_id: post_turn_active_scene_id,
-        pose_lora_used: None, // populated in Phase 3 when inline image gen is wired up
     })
 }
 
@@ -1242,6 +1238,7 @@ pub async fn generate_scene_image_for_turn(
     scene_prompt: String,
     story_id: Option<i64>,
     character_names: Option<Vec<String>>,
+    character_poses: Option<Vec<String>>,
     app: AppHandle,
     state: State<'_, OllamaState>,
     config_state: State<'_, ConfigState>,
@@ -1413,22 +1410,57 @@ pub async fn generate_scene_image_for_turn(
         _ => "people",
     };
 
-    // Resolve pose LoRA from the database.
-    // `pose` field not available in this command's input — falls back to keyword scanning.
-    let character_pose = String::new();
-    let pose_lora = resolve_pose_lora(&character_pose, &scene_prompt, &state.db).await;
-    if let Some(ref lora_match) = pose_lora {
+    // Read config values needed for ControlNet and content rating.
+    let (content_rating, controlnet_enabled, controlnet_strength) = {
+        let config = config_state.0.lock().map_err(|e| e.to_string())?;
+        (config.content_rating.clone(), config.controlnet_pose_enabled, config.controlnet_pose_strength)
+    };
+
+    // Extract pose emphasis from scene prompt keywords.
+    let pose_emphasis = extract_pose_emphasis(&scene_prompt);
+    println!(
+        "[Orchestrator][DEBUG] Pose emphasis from scene prompt: '{}'",
+        &pose_emphasis
+    );
+
+    // Resolve ControlNet pose skeleton — prefer explicit LLM pose, fall back to keyword detection
+    let skeletons_dir = app_data.join("pose_skeletons");
+    let controlnet_image_path: Option<String> = if controlnet_enabled && skeletons_dir.exists() {
+        let llm_pose = character_poses
+            .as_ref()
+            .and_then(|poses| poses.first())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_uppercase().replace('-', "_"));
+        let pose_source = if llm_pose.is_some() { "LLM" } else { "keywords" };
+        let detected_pose = llm_pose
+            .unwrap_or_else(|| detect_pose_name_from_prompt(&scene_prompt));
+
         println!(
-            "[Orchestrator][DEBUG] Pose LoRA matched: filename={}, strength={}, trigger_words={}",
-            lora_match.lora_filename, lora_match.strength, lora_match.trigger_words
+            "[Orchestrator][DEBUG] Detected pose: {} (from {})",
+            detected_pose, pose_source
         );
+
+        let skeleton_path = crate::image_gen::pose_skeletons::get_skeleton_path_for_pose(
+            &detected_pose, &skeletons_dir,
+        );
+        if skeleton_path.exists() {
+            println!(
+                "[Orchestrator][DEBUG] ControlNet skeleton: pose={}, path={}",
+                detected_pose, skeleton_path.display()
+            );
+            Some(skeleton_path.to_string_lossy().to_string())
+        } else {
+            println!("[Orchestrator][DEBUG] No skeleton found for pose={}", detected_pose);
+            None
+        }
     } else {
-        println!(
-            "[Orchestrator][DEBUG] No pose LoRA matched for pose='{}', scene prompt keywords",
-            &character_pose
-        );
-    }
-    let pose_emphasis = pose_lora.as_ref().map(|m| m.pose_emphasis.clone()).unwrap_or_default();
+        if !controlnet_enabled {
+            println!("[Orchestrator][DEBUG] ControlNet disabled in settings, skipping skeleton");
+        } else {
+            println!("[Orchestrator][DEBUG] pose_skeletons directory not found, skipping ControlNet");
+        }
+        None
+    };
 
     println!("[Orchestrator] Subject count tag: {}", subject_count_tag);
 
@@ -1491,9 +1523,9 @@ pub async fn generate_scene_image_for_turn(
         };
 
         let region_prefix = match region {
-            "left" => "full body shot of a person on the left,",
-            "right" => "full body shot of a person on the right,",
-            _ => "full body shot of a person standing in the scene,",
+            "left" => "a person on the left side of the scene,",
+            "right" => "a person on the right side of the scene,",
+            _ => "a person in the center of the scene,",
         };
         char_segments.push(format!("{} {}", region_prefix, char_desc));
     }
@@ -1543,7 +1575,7 @@ pub async fn generate_scene_image_for_turn(
     };
 
     let enriched_prompt = format!(
-        "(masterpiece, best quality, highly detailed, full body, wide angle, cinematic composition, environmental portrait), {}{}, {}, {}, detailed face, clear face, realistic face",
+        "(masterpiece, best quality, highly detailed, cinematic composition), (head and face visible, face in frame:1.4), {}{}, {}, {}, (detailed face, clear face, realistic face:1.3)",
         pose_prefix,
         subject_count_tag,
         scene_prompt,
@@ -1600,17 +1632,18 @@ pub async fn generate_scene_image_for_turn(
         })
         .collect();
 
-    let content_rating = {
-        let config = config_state.0.lock().map_err(|e| e.to_string())?;
-        config.content_rating.clone()
-    };
-
     let sfw_negative = if content_rating == "sfw" {
         ", nsfw, nude, naked, nudity, bare chest, cleavage, lingerie, underwear, \
          suggestive, seductive, sexual, explicit, provocative, revealing clothing, \
          bikini, swimsuit, exposed skin, nipples, breasts"
     } else {
         ""
+    };
+
+    let (scene_width, scene_height) = if num_chars == 1 {
+        (896u32, 1152u32)
+    } else {
+        (1152u32, 896u32)
     };
 
     let request = comfyui_api::ImageGenRequest {
@@ -1622,19 +1655,34 @@ pub async fn generate_scene_image_for_turn(
         seed: Some(rand::random::<i64>().abs()),
         steps: None,
         cfg: None,
-        width: Some(DEFAULT_IMAGE_WIDTH),
-        height: Some(DEFAULT_IMAGE_HEIGHT),
+        width: Some(scene_width),
+        height: Some(scene_height),
         negative_prompt: Some(format!(
-            "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+            "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), decapitated, \
+             (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
              close-up, closeup, head shot, headshot, cropped, zoomed in{}",
             sfw_negative
         )),
         timeout_secs: Some(600),
-        pose_lora_filename: pose_lora.as_ref().map(|l| l.lora_filename.clone()),
-        pose_lora_strength: pose_lora.as_ref().map(|l| l.strength),
+        controlnet_image_path,
+        controlnet_strength: Some(controlnet_strength),
     };
 
     let output_dir = app_data.join("generated_images");
+    println!(
+        "[Orchestrator][DEBUG] ControlNet: enabled={}, skeleton={}, strength={}",
+        controlnet_enabled,
+        request.controlnet_image_path.as_deref().unwrap_or("NONE"),
+        controlnet_strength
+    );
+    println!(
+        "[Orchestrator][DEBUG] Full scene image generation summary:\n  \
+         Pose: {}\n  ControlNet: {}\n  Characters: {}\n  Prompt (first 150): {}",
+        character_poses.as_ref().and_then(|p| p.first()).map(|s| s.as_str()).unwrap_or("(keyword fallback)"),
+        request.controlnet_image_path.as_deref().unwrap_or("NONE"),
+        characters.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "),
+        &request.scene_prompt[..request.scene_prompt.len().min(150)]
+    );
     println!(
         "[Orchestrator] Submitting to ComfyUI: {} character(s), workflow={}, output_dir={}",
         request.characters.len(),
@@ -1656,78 +1704,6 @@ pub async fn generate_scene_image_for_turn(
         .ok_or_else(|| "No image generated".to_string())?;
     println!("[Orchestrator] Scene image generated successfully: {}", image_path);
     Ok(image_path)
-}
-
-// ============================================================================
-// POSE LORA RESOLUTION
-// ============================================================================
-
-/// Resolved pose LoRA match — carries everything the image pipeline needs.
-struct PoseLoraMatch {
-    pub lora_filename: String,
-    pub trigger_words: String,
-    pub strength: f64,
-    /// Weighted SD tag e.g. "(person sitting down:1.3)"
-    pub pose_emphasis: String,
-}
-
-/// Resolve a pose LoRA from the database.
-///
-/// 1. If `pose` is non-empty, tries to match it against LoRA names (case-insensitive).
-/// 2. Falls back to keyword-scanning `scene_prompt` against each LoRA's `keywords` field.
-/// 3. Returns `None` if the table is empty or no match is found.
-async fn resolve_pose_lora(
-    pose: &str,
-    scene_prompt: &str,
-    db: &sqlx::SqlitePool,
-) -> Option<PoseLoraMatch> {
-    let rows = sqlx::query(
-        "SELECT name, keywords, lora_filename, trigger_words, strength \
-         FROM pose_loras WHERE enabled = 1 ORDER BY name",
-    )
-    .fetch_all(db)
-    .await
-    .ok()?;
-
-    if rows.is_empty() {
-        return None;
-    }
-
-    let pose_lower = pose.to_lowercase();
-    let scene_lower = scene_prompt.to_lowercase();
-
-    // Step 1: exact name match on the pose field
-    if !pose_lower.is_empty() {
-        for row in &rows {
-            let name: String = row.get("name");
-            if name.to_lowercase() == pose_lower {
-                let trigger_words: String = row.get("trigger_words");
-                let strength: f64 = row.get("strength");
-                let lora_filename: String = row.get("lora_filename");
-                let pose_emphasis = format!("({}:1.3)", trigger_words);
-                return Some(PoseLoraMatch { lora_filename, trigger_words, strength, pose_emphasis });
-            }
-        }
-    }
-
-    // Step 2: keyword-scan the scene prompt
-    for row in &rows {
-        let keywords: String = row.get("keywords");
-        let matched = keywords
-            .split(',')
-            .map(|kw| kw.trim())
-            .filter(|kw| !kw.is_empty())
-            .any(|kw| scene_lower.contains(kw));
-        if matched {
-            let trigger_words: String = row.get("trigger_words");
-            let strength: f64 = row.get("strength");
-            let lora_filename: String = row.get("lora_filename");
-            let pose_emphasis = format!("({}:1.3)", trigger_words);
-            return Some(PoseLoraMatch { lora_filename, trigger_words, strength, pose_emphasis });
-        }
-    }
-
-    None
 }
 
 /// Scans the scene prompt for action/pose keywords and returns an emphasized
@@ -1781,6 +1757,33 @@ fn extract_pose_emphasis(scene_prompt: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Detect a pose name from scene prompt keywords.
+/// Returns a pose name string that maps to a skeleton PNG in pose_skeletons/.
+fn detect_pose_name_from_prompt(scene_prompt: &str) -> String {
+    let lower = scene_prompt.to_lowercase();
+
+    let checks: &[(&[&str], &str)] = &[
+        (&["lying", "lay", "nap", "sleep", "bed", "resting"], "LYING_DOWN"),
+        (&["driving", "truck", "car", "steering", "behind the wheel"], "DRIVING"),
+        (&["riding", "horse", "horseback"], "STANDING"), // no riding skeleton yet
+        (&["sitting", "sat", "seat", "chair", "booth", "diner", "eating"], "SITTING"),
+        (&["running", "ran", "sprint", "rushing", "dashing", "chasing"], "RUNNING"),
+        (&["kneeling", "crouching", "bending", "ducking"], "KNEELING"),
+        (&["cooking", "kitchen", "stove", "preparing"], "COOKING"),
+        (&["leaning", "propped", "resting against", "slouching"], "LEANING"),
+        (&["fighting", "punching", "kicking", "combat", "sparring"], "FIGHTING"),
+        (&["walking", "walked", "strolling", "heading"], "WALKING"),
+    ];
+
+    for (keywords, pose_name) in checks {
+        if keywords.iter().any(|kw| lower.contains(kw)) {
+            return pose_name.to_string();
+        }
+    }
+
+    "STANDING".to_string()
 }
 
 /// Infer "female" / "male" / "unknown" from the character's DB gender field,
@@ -2031,6 +2034,7 @@ mod tests {
             name: "Elena".into(),
             region: "left".into(),
             view: "FULL-BODY".into(),
+            pose: "".into(),
             action: "walking toward table".into(),
             expression: "warm smile".into(),
             clothing: "blue jacket, white t-shirt".into(),
@@ -2061,6 +2065,7 @@ mod tests {
             name: "Unknown".into(),
             region: "center".into(),
             view: "PORTRAIT".into(),
+            pose: "".into(),
             action: "".into(),
             expression: "neutral".into(),
             clothing: "dark suit".into(),
@@ -2071,7 +2076,7 @@ mod tests {
             prompt_only_description: None,
         };
         let fragment = character_prompt_fragment(&cis, None);
-        assert!(fragment.contains("portrait"));
+        assert!(fragment.contains("full body"));
         assert!(fragment.contains("neutral"));
         assert!(fragment.contains("dark suit"));
     }
@@ -2082,6 +2087,7 @@ mod tests {
             name: "Marcus".into(),
             region: "left".into(),
             view: "FULL-BODY".into(),
+            pose: "".into(),
             action: "standing".into(),
             expression: "serious".into(),
             clothing: "".into(),

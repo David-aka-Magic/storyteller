@@ -6,7 +6,7 @@
   import WritingSettings from './WritingSettings.svelte';
   import ServiceSettings from './ServiceSettings.svelte';
   import AboutSection from './AboutSection.svelte';
-  import PoseLoraManager from './PoseLoraManager.svelte';
+  import ImageSettings from './ImageSettings.svelte';
 
   let {
     show = false,
@@ -16,7 +16,7 @@
     onclose?: () => void;
   } = $props();
 
-  type Tab = 'writing' | 'theme' | 'content' | 'services' | 'poseloras' | 'about';
+  type Tab = 'writing' | 'theme' | 'content' | 'services' | 'image' | 'about';
   let activeTab: Tab = $state('writing');
 </script>
 
@@ -53,10 +53,10 @@
       </button>
       <button
         class="tab-btn"
-        class:active={activeTab === 'poseloras'}
-        onclick={() => (activeTab = 'poseloras')}
+        class:active={activeTab === 'image'}
+        onclick={() => (activeTab = 'image')}
       >
-        🎭 Pose LoRAs
+        🖼️ Image
       </button>
       <button
         class="tab-btn"
@@ -80,8 +80,8 @@
       {#if activeTab === 'services'}
         <ServiceSettings />
       {/if}
-      {#if activeTab === 'poseloras'}
-        <PoseLoraManager />
+      {#if activeTab === 'image'}
+        <ImageSettings />
       {/if}
       {#if activeTab === 'about'}
         <AboutSection />

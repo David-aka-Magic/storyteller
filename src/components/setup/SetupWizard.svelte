@@ -20,6 +20,8 @@
     ipadapter_faceid_lora:  'IP-Adapter FaceID LoRA',
     insightface_buffalo_l:  'InsightFace Buffalo Model',
     clip_vision:            'CLIP Vision Model',
+    custom_node_controlnet_aux: 'Custom Node: ControlNet Aux',
+    controlnet_openpose_model:  'ControlNet OpenPose SDXL Model',
   };
 
   const DEP_SIZES: Record<string, string> = {
@@ -34,6 +36,8 @@
     ipadapter_faceid_lora:  '~150 MB',
     insightface_buffalo_l:  '~700 MB',
     clip_vision:            '~3.9 GB',
+    custom_node_controlnet_aux: '~50 MB',
+    controlnet_openpose_model:  '~2.5 GB',
   };
 
   // Install order matches backend's expected dependency order
@@ -42,6 +46,7 @@
     'checkpoint_juggernaut', 'checkpoint_animagine',
     'custom_node_ipadapter', 'ipadapter_faceid_model',
     'ipadapter_faceid_lora', 'insightface_buffalo_l', 'clip_vision',
+    'custom_node_controlnet_aux', 'controlnet_openpose_model',
   ];
 
   // ── State ─────────────────────────────────────────────────────────────────

@@ -20,6 +20,8 @@ export interface ChatMessage {
   dbMessageId?: number;
   /** Names of characters that were in this scene (needs_render=true). Used to filter image gen. */
   sceneCharacterNames?: string[];
+  /** Poses per character (matches sceneCharacterNames order). Used to select ControlNet skeleton. */
+  sceneCharacterPoses?: string[];
 }
 
 export interface ChatSummary {
@@ -413,8 +415,6 @@ export interface StoryTurnResult {
   image_generation_attempted: boolean;
   /** Error message if image generation failed (null on success or not attempted). */
   image_generation_error: string | null;
-  /** LoRA filename used for pose this turn (null if none matched). */
-  pose_lora_used: string | null;
   /** DB message_id of the assistant message saved this turn. Used to persist images later. */
   assistant_message_id: number | null;
   /** Scene DB id active after this turn (auto-created or matched). Null if no story selected. */
@@ -527,17 +527,6 @@ export interface AssembledContextInfo {
   recent_turn_count: number;
   /** Number of turns that were compressed */
   compressed_turn_count: number;
-}
-
-export interface PoseLora {
-  id: number;
-  name: string;
-  keywords: string;
-  lora_filename: string;
-  trigger_words: string;
-  strength: number;
-  enabled: boolean;
-  created_at: string;
 }
 
 /** Llama 3.1 8B context window */

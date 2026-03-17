@@ -6,12 +6,14 @@
     hasMessages = false,
     onClearChat,
     onOpenGallery,
+    onCreateCharacter,
   }: {
     title?: string;
     isLoading?: boolean;
     hasMessages?: boolean;
     onClearChat?: () => void;
     onOpenGallery?: () => void;
+    onCreateCharacter?: () => void;
   } = $props();
 </script>
 
@@ -20,6 +22,13 @@
     <h1>{title}</h1>
   </div>
   <div class="topbar-right">
+    <button
+      class="create-char-btn"
+      onclick={onCreateCharacter}
+      title="Create a new character (not linked to any story)"
+    >
+      👤+ New Character
+    </button>
     <button
       class="gallery-btn"
       onclick={onOpenGallery}
@@ -71,6 +80,18 @@
     gap: 8px;
     flex-shrink: 0;
   }
+
+  .create-char-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-secondary);
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s;
+  }
+  .create-char-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
   .gallery-btn {
     background: var(--bg-tertiary);

@@ -310,23 +310,6 @@ impl OllamaState {
         .await
         .ok();
 
-        // Pose LoRA definitions
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS pose_loras (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                name           TEXT    NOT NULL UNIQUE,
-                keywords       TEXT    NOT NULL,
-                lora_filename  TEXT    NOT NULL,
-                trigger_words  TEXT    NOT NULL DEFAULT '',
-                strength       REAL    NOT NULL DEFAULT 0.7,
-                enabled        INTEGER NOT NULL DEFAULT 1,
-                created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-            )"
-        )
-        .execute(pool)
-        .await
-        .expect("Failed to create pose_loras table");
-
         // =====================================================================
         // STORY MANAGER MIGRATIONS
         // =====================================================================

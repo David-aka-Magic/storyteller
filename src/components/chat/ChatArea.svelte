@@ -65,7 +65,7 @@
     setImageError(msg.id, null);
     generatingImages = new Set([...generatingImages, msg.id]);
     try {
-      const path = await generateSceneImageForTurn(prompt, storyId ?? undefined, msg.sceneCharacterNames);
+      const path = await generateSceneImageForTurn(prompt, storyId ?? undefined, msg.sceneCharacterNames, msg.sceneCharacterPoses);
       const base64 = await readFileBase64(path);
       onimagegenerated?.(msg.id, `data:image/png;base64,${base64}`, path);
       await scrollToBottom();

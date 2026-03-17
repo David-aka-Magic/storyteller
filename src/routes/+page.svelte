@@ -27,7 +27,6 @@
   import { listStories, loadStory, createStory, saveStoryPremise, deleteStory as apiDeleteStory } from '$lib/api/story';
   import { getConfig } from '$lib/api/config';
   import { setSceneHint } from '$lib/api/scene';
-  import { seedDefaultPoseLoras } from '$lib/api/pose-loras';
 
   import type {
     ChatMessage, SdDetails,
@@ -268,6 +267,7 @@
         },
         dbMessageId: result.assistant_message_id ?? undefined,
         sceneCharacterNames: result.characters.map(c => c.name),
+        sceneCharacterPoses: result.characters.map(c => c.pose),
       };
 
       if (result.generated_image_path) {
@@ -327,7 +327,8 @@
       const path = await generateSceneImageForTurn(
         lastAiMsg.data!.sd_prompt!,
         storyId,
-        lastAiMsg.sceneCharacterNames
+        lastAiMsg.sceneCharacterNames,
+        lastAiMsg.sceneCharacterPoses
       );
       const base64 = await readFileBase64(path);
       handleImageGenerated(lastAiMsg.id, `data:image/png;base64,${base64}`, path);
@@ -456,7 +457,6 @@
 
     if (setupComplete) {
       loadAppData();
-      seedDefaultPoseLoras().catch(() => {}); // no-op if table already populated
     }
   });
 </script>
@@ -486,6 +486,7 @@
         hasMessages={messages.length > 0}
         onClearChat={clearChat}
         onOpenGallery={() => showGallery = !showGallery}
+        onCreateCharacter={() => { characterToEdit = null; showCharModal = true; }}
       />
       {#if showGallery && selectedStoryId && selectedStoryId !== '1'}
         <StoryGallery

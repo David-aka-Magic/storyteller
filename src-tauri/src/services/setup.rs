@@ -532,6 +532,18 @@ async fn check_custom_nodes(app: &AppHandle) -> Vec<DependencyStatus> {
                 .join("ip-adapter-faceid-plusv2_sdxl_lora.safetensors"),
             "IP-Adapter FaceID LoRA not found",
         ),
+        (
+            "custom_node_controlnet_aux",
+            base.join("custom_nodes").join("comfyui_controlnet_aux"),
+            "ControlNet auxiliary preprocessors not installed",
+        ),
+        (
+            "controlnet_openpose_model",
+            base.join("models")
+                .join("controlnet")
+                .join("OpenPoseXL2.safetensors"),
+            "ControlNet OpenPose SDXL model not found",
+        ),
     ];
 
     items
@@ -1034,6 +1046,73 @@ async fn install_clip_vision(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+async fn install_custom_node_controlnet_aux(app: &AppHandle) -> Result<(), String> {
+    let dest = comfyui_dir(app)
+        .join("custom_nodes")
+        .join("comfyui_controlnet_aux");
+
+    if dest.exists() {
+        emit_progress(app, "custom_node_controlnet_aux", 1.0, "ControlNet aux already installed", false);
+        return Ok(());
+    }
+
+    emit_progress(app, "custom_node_controlnet_aux", 0.0, "Cloning comfyui_controlnet_aux…", false);
+
+    std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
+            dest.to_str().unwrap_or("comfyui_controlnet_aux"),
+        ])
+        .status()
+        .map_err(|e| format!("git clone controlnet_aux failed: {}", e))?;
+
+    if !status.success() {
+        return Err("Failed to clone comfyui_controlnet_aux".to_string());
+    }
+
+    emit_progress(app, "custom_node_controlnet_aux", 0.5, "Installing controlnet_aux requirements…", false);
+
+    let pip = comfyui_dir(app).join("venv").join("Scripts").join("pip.exe");
+    let req_file = dest.join("requirements.txt");
+
+    if req_file.exists() {
+        let status = Command::new(&pip)
+            .args(["install", "-r", req_file.to_str().unwrap_or("requirements.txt")])
+            .status()
+            .map_err(|e| format!("pip install controlnet_aux requirements failed: {}", e))?;
+
+        if !status.success() {
+            return Err("pip install -r requirements.txt for controlnet_aux failed".to_string());
+        }
+    }
+
+    emit_progress(app, "custom_node_controlnet_aux", 1.0, "ControlNet aux installed successfully", false);
+    Ok(())
+}
+
+async fn install_controlnet_openpose_model(app: &AppHandle) -> Result<(), String> {
+    let dest = comfyui_dir(app)
+        .join("models")
+        .join("controlnet")
+        .join("OpenPoseXL2.safetensors");
+
+    std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+
+    download_file_with_progress(
+        app,
+        "https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0/resolve/main/OpenPoseXL2.safetensors",
+        &dest,
+        "controlnet_openpose_model",
+    )
+    .await?;
+
+    emit_progress(app, "controlnet_openpose_model", 1.0, "ControlNet OpenPose model installed", false);
+    Ok(())
+}
+
 async fn install_comfyui_torch(app: &AppHandle) -> Result<(), String> {
     let comfyui = comfyui_dir(app);
     let pip = comfyui.join("venv").join("Scripts").join("pip.exe");
@@ -1187,6 +1266,8 @@ pub async fn install_dependency(name: String, app: AppHandle) -> Result<(), Stri
         "ipadapter_faceid_lora" => install_ipadapter_lora(&app).await,
         "insightface_buffalo_l" => install_insightface(&app).await,
         "clip_vision" => install_clip_vision(&app).await,
+        "custom_node_controlnet_aux" => install_custom_node_controlnet_aux(&app).await,
+        "controlnet_openpose_model" => install_controlnet_openpose_model(&app).await,
         _ => Err(format!("Unknown dependency: {}", name)),
     };
 
@@ -1211,6 +1292,8 @@ pub async fn install_all_dependencies(app: AppHandle) -> Result<(), String> {
         ("ipadapter_faceid_lora", "IPAdapter FaceID LoRA"),
         ("insightface_buffalo_l", "InsightFace buffalo_l"),
         ("clip_vision", "CLIP vision model"),
+        ("custom_node_controlnet_aux", "ControlNet auxiliary nodes"),
+        ("controlnet_openpose_model", "ControlNet OpenPose SDXL model"),
     ];
 
     // Check what's already installed so we don't repeat work

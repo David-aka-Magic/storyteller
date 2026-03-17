@@ -86,7 +86,8 @@ pub(super) fn build_workflow_modifications(
 
     // --- Negative prompt ---
     let neg_text = request.negative_prompt.as_deref().unwrap_or(
-        "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+        "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), decapitated, \
+         (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
          (missing fingers:1.3), (extra fingers:1.3), (too many fingers:1.4), \
          (fused fingers:1.3), (poorly drawn hands:1.4), (floating limbs:1.3), \
          (disconnected limbs:1.3), (extra limbs:1.3), (missing arms:1.2), \
@@ -173,69 +174,85 @@ pub(super) fn build_workflow_modifications(
 }
 
 // ============================================================================
-// POSE LORA INJECTION
+// CONTROLNET INJECTION
 // ============================================================================
 
-/// Inject a LoraLoader node into the workflow for pose LoRAs.
-/// This rewires the model/CLIP chain: Checkpoint → LoraLoader → KSampler/CLIP.
-/// Uses node ID "50" for the LoraLoader to avoid conflicts with existing nodes.
-pub(super) fn inject_pose_lora(
+/// Inject ControlNet nodes into the workflow for pose guidance.
+///
+/// Adds 3 nodes:
+///   Node "60" — ControlNetLoader: loads the OpenPose SDXL model
+///   Node "61" — LoadImage: loads the skeleton image (already uploaded to ComfyUI)
+///   Node "62" — ControlNetApplyAdvanced: applies conditioning
+///
+/// Rewires KSampler (node "35") so positive/negative come from the ControlNet
+/// apply node instead of directly from the CLIP encoders.
+pub(super) fn inject_controlnet(
     workflow: &mut Value,
-    lora_filename: &str,
+    skeleton_filename: &str,
     strength: f64,
 ) -> Result<(), ComfyError> {
     let obj = workflow
         .as_object_mut()
         .ok_or_else(|| ComfyError::WorkflowLoadFailed("Workflow root is not an object".into()))?;
 
-    // 1. Insert the LoraLoader node
-    let lora_node = serde_json::json!({
-        "class_type": "LoraLoader",
+    // Node 60: ControlNetLoader
+    obj.insert("60".to_string(), serde_json::json!({
+        "class_type": "ControlNetLoader",
         "inputs": {
-            "model": ["1", 0],
-            "clip": ["1", 1],
-            "lora_name": lora_filename,
-            "strength_model": strength,
-            "strength_clip": strength
+            "control_net_name": "OpenPoseXL2.safetensors"
         }
-    });
-    obj.insert("50".to_string(), lora_node);
+    }));
 
-    // 2. Rewire KSampler (node "35") to take model from LoraLoader instead of Checkpoint
+    // Node 61: LoadImage — the uploaded skeleton PNG
+    obj.insert("61".to_string(), serde_json::json!({
+        "class_type": "LoadImage",
+        "inputs": {
+            "image": skeleton_filename,
+            "upload": "image"
+        }
+    }));
+
+    // Node 62: ControlNetApplyAdvanced
+    obj.insert("62".to_string(), serde_json::json!({
+        "class_type": "ControlNetApplyAdvanced",
+        "inputs": {
+            "positive":    ["2",  0],
+            "negative":    ["3",  0],
+            "control_net": ["60", 0],
+            "image":       ["61", 0],
+            "strength":    strength,
+            "start_percent": 0.0,
+            "end_percent":   0.8
+        }
+    }));
+
+    // Rewire KSampler (node "35"): positive → ["62", 0], negative → ["62", 1]
     if let Some(node_35) = obj.get_mut("35") {
         if let Some(inputs) = node_35.get_mut("inputs") {
-            if let Some(model_input) = inputs.get_mut("model") {
-                if model_input
-                    .as_array()
-                    .map(|a| a.first().and_then(|v| v.as_str()) == Some("1"))
-                    .unwrap_or(false)
+            if let Some(pos) = inputs.get_mut("positive") {
+                if pos.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|v| v.as_str())
+                    == Some("2")
                 {
-                    *model_input = serde_json::json!(["50", 0]);
+                    *pos = serde_json::json!(["62", 0]);
                 }
             }
-        }
-    }
-
-    // 3. Rewire CLIP text encode nodes ("2" positive, "3" negative) to use LoRA's CLIP
-    for clip_node_id in &["2", "3"] {
-        if let Some(node) = obj.get_mut(*clip_node_id) {
-            if let Some(inputs) = node.get_mut("inputs") {
-                if let Some(clip_input) = inputs.get_mut("clip") {
-                    if clip_input
-                        .as_array()
-                        .map(|a| a.first().and_then(|v| v.as_str()) == Some("1"))
-                        .unwrap_or(false)
-                    {
-                        *clip_input = serde_json::json!(["50", 1]);
-                    }
+            if let Some(neg) = inputs.get_mut("negative") {
+                if neg.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|v| v.as_str())
+                    == Some("3")
+                {
+                    *neg = serde_json::json!(["62", 1]);
                 }
             }
         }
     }
 
     println!(
-        "[ComfyUI] Injected LoraLoader node 50: lora={}, strength={}",
-        lora_filename, strength
+        "[ComfyUI] Injected ControlNet nodes (60,61,62): skeleton={}, strength={}",
+        skeleton_filename, strength
     );
     Ok(())
 }
@@ -329,8 +346,8 @@ mod tests {
             height: Some(896),
             negative_prompt: None,
             timeout_secs: None,
-            pose_lora_filename: None,
-            pose_lora_strength: None,
+            controlnet_image_path: None,
+            controlnet_strength: None,
         };
 
         let uploaded_refs = vec!["ref_alice_0.png".to_string()];

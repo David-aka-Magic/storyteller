@@ -32,6 +32,14 @@ pub struct AppConfig {
     /// Whether the first-run dependency setup has been completed
     #[serde(default)]
     pub setup_completed: bool,
+
+    /// ControlNet pose strength (0.0–1.0). Higher = stronger pose adherence.
+    #[serde(default = "default_controlnet_strength")]
+    pub controlnet_pose_strength: f64,
+
+    /// Whether ControlNet pose guidance is enabled.
+    #[serde(default = "default_true")]
+    pub controlnet_pose_enabled: bool,
 }
 
 fn default_content_rating() -> String {
@@ -40,6 +48,14 @@ fn default_content_rating() -> String {
 
 fn default_response_length() -> String {
     "medium".to_string()
+}
+
+fn default_controlnet_strength() -> f64 {
+    0.85
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -54,6 +70,8 @@ impl Default for AppConfig {
             response_length: "medium".to_string(),
             comfyui_path: String::new(),
             setup_completed: false,
+            controlnet_pose_strength: 0.85,
+            controlnet_pose_enabled: true,
         }
     }
 }

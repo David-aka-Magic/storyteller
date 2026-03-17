@@ -51,6 +51,13 @@ fn main() {
             app.manage(state);
             app.manage(SceneHintState(Mutex::new(HashMap::new())));
 
+            // Pre-generate pose skeleton PNGs (fast no-op if already present)
+            if let Ok(app_data_dir) = app.path().app_data_dir() {
+                if let Err(e) = image_gen::pose_skeletons::ensure_pose_skeletons(&app_data_dir) {
+                    eprintln!("[PoseSkeletons] Warning: {}", e);
+                }
+            }
+
             // Auto-start services if enabled (after all state is managed)
             if auto_start {
                 std::thread::spawn(move || {
@@ -153,12 +160,6 @@ fn main() {
             commands::scene::get_active_scene,
             commands::scene::create_scene_from_llm_output,
             commands::scene::set_scene_hint,
-            // Pose LoRA commands
-            commands::pose_loras::list_pose_loras,
-            commands::pose_loras::create_pose_lora,
-            commands::pose_loras::update_pose_lora,
-            commands::pose_loras::delete_pose_lora,
-            commands::pose_loras::seed_default_pose_loras,
             // Setup / dependency installer commands
             services::setup::check_setup_status,
             services::setup::install_dependency,

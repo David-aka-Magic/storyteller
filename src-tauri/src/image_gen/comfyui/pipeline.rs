@@ -65,12 +65,12 @@ pub struct ImageGenRequest {
     /// Optional: timeout in seconds for generation polling.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
-    /// Optional: pose LoRA filename (e.g. "sitting_pose.safetensors")
+    /// Optional: path to a ControlNet pose skeleton image on disk.
     #[serde(default)]
-    pub pose_lora_filename: Option<String>,
-    /// Optional: pose LoRA strength (0.0-1.0)
+    pub controlnet_image_path: Option<String>,
+    /// Optional: ControlNet strength (0.0-1.0, default 0.85).
     #[serde(default)]
-    pub pose_lora_strength: Option<f64>,
+    pub controlnet_strength: Option<f64>,
 }
 
 /// Result of a successful image generation.
@@ -141,6 +141,21 @@ pub async fn generate_scene_image(
         }
     }
 
+    // Upload ControlNet pose skeleton if specified
+    let controlnet_skeleton_name: Option<String> = if let Some(ref cn_path) = request.controlnet_image_path {
+        let cn_path_obj = Path::new(cn_path);
+        if cn_path_obj.exists() {
+            let stored = upload_image_to_comfyui(base_url, cn_path_obj, "pose_skeleton.png").await?;
+            println!("[ComfyUI] Uploaded pose skeleton: {}", stored);
+            Some(stored)
+        } else {
+            println!("[ComfyUI] WARNING: ControlNet skeleton path does not exist: {}", cn_path);
+            None
+        }
+    } else {
+        None
+    };
+
     // 3. Load and modify workflow
     let template_path = Path::new(&request.workflow_template);
     let mut workflow = load_workflow_template(template_path)?;
@@ -149,10 +164,10 @@ pub async fn generate_scene_image(
     modify_workflow(&mut workflow, &modifications)?;
     println!("[ComfyUI] Workflow prepared with {} modifications", modifications.len());
 
-    // Inject pose LoRA if specified
-    if let Some(ref lora_file) = request.pose_lora_filename {
-        let strength = request.pose_lora_strength.unwrap_or(0.7);
-        super::workflow::inject_pose_lora(&mut workflow, lora_file, strength)?;
+    // Inject ControlNet if a skeleton was uploaded
+    if let Some(ref skeleton_name) = controlnet_skeleton_name {
+        let cn_strength = request.controlnet_strength.unwrap_or(0.85);
+        super::workflow::inject_controlnet(&mut workflow, skeleton_name, cn_strength)?;
     }
 
     println!(

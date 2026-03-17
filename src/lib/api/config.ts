@@ -10,6 +10,8 @@ export interface AppConfig {
   response_length: 'short' | 'medium' | 'long';
   comfyui_path: string;
   setup_completed: boolean;
+  controlnet_pose_strength: number;
+  controlnet_pose_enabled: boolean;
 }
 
 export async function getConfig(): Promise<AppConfig> {

@@ -7,4 +7,3 @@ export * from './image-gen';
 export * from './services';
 export * from './config';
 export * from './scene';
-export * from './pose-loras';
