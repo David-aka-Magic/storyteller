@@ -2,8 +2,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { CharacterProfile, SceneCharacter, SceneCharacterLookupResult } from '$lib/types';
 
-export async function listCharactersForStory(storyId?: number): Promise<CharacterProfile[]> {
-  return invoke('list_characters_for_story', { storyId: storyId ?? null });
+export async function listCharactersForStory(storyId?: number, contentRatingFilter?: string): Promise<CharacterProfile[]> {
+  return invoke('list_characters_for_story', { storyId: storyId ?? null, contentRatingFilter: contentRatingFilter ?? null });
 }
 
 /** The backend ignores the `id` field and assigns a new one. Pass `id: 0` for new characters. */
@@ -66,8 +66,8 @@ export async function removeCharacterFromStory(characterId: number, storyId: num
 }
 
 /** List ALL characters in the database, not filtered by story. */
-export async function listAllCharacters(): Promise<CharacterProfile[]> {
-  return invoke('list_all_characters');
+export async function listAllCharacters(contentRatingFilter?: string): Promise<CharacterProfile[]> {
+  return invoke('list_all_characters', { contentRatingFilter: contentRatingFilter ?? null });
 }
 
 /**

@@ -64,13 +64,15 @@ You MUST include ALL of these fields every single turn. Never omit any of them.
   "turn_id": <integer, incrementing>,
   "story_json": { "response": "<narrative text following the writing rules above>", "summary_hint": "<one sentence summary>" },
   "scene_json": { "location": "<place>", "location_type": "interior or exterior", "time_of_day": "<time>", "weather": "<weather or n/a>", "lighting": "<lighting>", "mood": "<atmosphere>" },
-  "characters_in_scene": [ { "name": "<EXACT registered name>", "region": "<left|center|right|left-seated|center-seated|right-seated|left-background|center-background|right-background|off-screen>", "view": "<PORTRAIT|UPPER-BODY|FULL-BODY|NONE — prefer FULL-BODY for most scenes. Only use PORTRAIT for extreme close-ups. Only use UPPER-BODY when characters are seated or behind furniture.>", "pose": "<SITTING|STANDING|LYING-DOWN|RUNNING|KNEELING|LEANING|DRIVING|COOKING|FIGHTING|CUSTOM — choose the pose that best matches what the character is physically doing>", "action": "<specific physical action>", "expression": "<specific facial expression>", "clothing": "<what they are wearing>", "facing": "<direction or character name>" } ],
+  "characters_in_scene": [ { "name": "<EXACT registered name>", "region": "<left|center|right|left-seated|center-seated|right-seated|left-background|center-background|right-background|off-screen>", "view": "<PORTRAIT|UPPER-BODY|FULL-BODY|NONE — prefer UPPER-BODY for most scenes (shows head, torso and arms). Use FULL-BODY only for action scenes where legs or feet matter. Use PORTRAIT for intimate close-ups or strong emotional moments.>", "pose": "<SITTING|STANDING|LYING-DOWN|RUNNING|KNEELING|LEANING|DRIVING|COOKING|FIGHTING|CUSTOM — choose the pose that best matches what the character is physically doing>", "action": "<specific physical action>", "expression": "<specific facial expression>", "clothing": "<what they are wearing>", "facing": "<direction or character name>" } ],
   "generation_flags": { "generate_image": <true if characters present or scene is visual>, "scene_changed": <true if location changed>, "characters_changed": <true if characters entered or exited> }
 }
 
 POSE SELECTION: Choose the pose that best describes each character's primary physical position. Use STANDING as the default. If the action clearly implies a different pose (sitting at a table → SITTING, sleeping → LYING-DOWN, running away → RUNNING), select the matching pose. The pose drives image generation — accuracy here means better images.
 
 CHARACTER NAME RULES: Use EXACT names as registered. Names are case-sensitive. Never invent new characters.
+
+PRONOUNS ARE CRITICAL. Each character's pronouns are listed in parentheses next to their name in the character database above (e.g. "Elena (she/her/hers)"). ALWAYS use the correct pronouns. "she/her" characters must NEVER be referred to as "he/him" or "they/them". Double-check every pronoun before writing it.
 
 === SCENE MANAGEMENT ===
 

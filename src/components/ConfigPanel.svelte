@@ -1,6 +1,7 @@
 <!-- src/components/ConfigPanel.svelte -->
 <script lang="ts">
   import { listCharactersForStory } from '$lib/api/character';
+  import { getConfig } from '$lib/api/config';
   import type { StoryPremise, CharacterProfile } from '../lib/types';
 
   export let stories: StoryPremise[] = [];
@@ -41,7 +42,9 @@
       showPicker = true;
 
       try {
-          const all = await listCharactersForStory();
+          const cfg = await getConfig().catch(() => null);
+          const filter = cfg?.content_rating === 'sfw' ? 'sfw' : undefined;
+          const all = await listCharactersForStory(undefined, filter);
           // Filter out characters already in this story by checking the current `characters` prop
           const currentIds = new Set(characters.map(c => c.id));
           pickerCharacters = all.filter(c => !currentIds.has(c.id));
@@ -162,7 +165,10 @@
                     on:change={() => onToggleCharacter(char.id)}
                   />
                   <div class="char-info">
-                    <span class="char-name">{char.name}</span>
+                    <span class="char-name">
+                      {char.name}
+                      {#if char.content_rating === 'nsfw'}<span class="nsfw-badge">NSFW</span>{/if}
+                    </span>
                     <span class="char-meta">{char.gender}, {char.age}</span>
                   </div>
                 </label>
@@ -433,8 +439,21 @@
     min-width: 0;
   }
   .char-info { display: flex; flex-direction: column; min-width: 0; }
-  .char-name { font-size: 0.9em; font-weight: 600; color: var(--text-primary); }
+  .char-name { font-size: 0.9em; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 5px; }
   .char-meta { font-size: 0.75em; color: var(--text-muted); }
+
+  .nsfw-badge {
+    font-size: 0.6em;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    background: color-mix(in srgb, var(--accent-danger, #f85149) 15%, transparent);
+    color: var(--accent-danger, #f85149);
+    border: 1px solid color-mix(in srgb, var(--accent-danger, #f85149) 35%, transparent);
+    flex-shrink: 0;
+  }
 
   .char-controls { display: flex; gap: 4px; flex-shrink: 0; }
   .edit-icon, .delete-icon {

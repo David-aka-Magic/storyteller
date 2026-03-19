@@ -169,10 +169,11 @@ export async function saveStory(): Promise<boolean> {
 
 /**
  * Refresh the story list from the database.
+ * Pass contentRatingFilter='sfw' to show only SFW stories; omit to show all.
  */
-export async function refreshStoryList(): Promise<StorySummary[]> {
+export async function refreshStoryList(contentRatingFilter?: string): Promise<StorySummary[]> {
   try {
-    const list = await apiListStories();
+    const list = await apiListStories(contentRatingFilter);
     storyState.update((s) => ({ ...s, stories: list }));
     return list;
   } catch (e) {

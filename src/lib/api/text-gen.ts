@@ -21,13 +21,47 @@ export async function generateSceneImageForTurn(
   scenePrompt: string,
   storyId?: number,
   characterNames?: string[],
-  characterPoses?: string[]
+  characterPoses?: string[],
+  positivePromptOverride?: string,
+  negativePromptOverride?: string,
 ): Promise<string> {
   return invoke('generate_scene_image_for_turn', {
     scenePrompt,
     storyId: storyId ?? null,
     characterNames: (characterNames && characterNames.length > 0) ? characterNames : null,
     characterPoses: (characterPoses && characterPoses.length > 0) ? characterPoses : null,
+    positivePromptOverride: positivePromptOverride ?? null,
+    negativePromptOverride: negativePromptOverride ?? null,
+  });
+}
+
+export async function previewScenePrompt(
+  scenePrompt: string,
+  storyId?: number,
+  characterNames?: string[],
+  characterPoses?: string[],
+): Promise<{ positive: string; negative: string }> {
+  return invoke('preview_scene_prompt', {
+    scenePrompt,
+    storyId: storyId ?? null,
+    characterNames: (characterNames && characterNames.length > 0) ? characterNames : null,
+    characterPoses: (characterPoses && characterPoses.length > 0) ? characterPoses : null,
+  });
+}
+
+export async function illustrateSceneCustom(
+  storyId: number,
+  chatId: number,
+  messageId: number,
+  positivePrompt: string,
+  negativePrompt: string,
+): Promise<string> {
+  return invoke('illustrate_scene_custom', {
+    storyId,
+    chatId,
+    messageId,
+    positivePrompt,
+    negativePrompt,
   });
 }
 

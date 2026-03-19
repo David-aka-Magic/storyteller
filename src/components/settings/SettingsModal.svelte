@@ -11,9 +11,11 @@
   let {
     show = false,
     onclose,
+    oncontentchange,
   }: {
     show?: boolean;
     onclose?: () => void;
+    oncontentchange?: () => void;
   } = $props();
 
   type Tab = 'writing' | 'theme' | 'content' | 'services' | 'image' | 'about';
@@ -75,7 +77,7 @@
         <ThemeSettings />
       {/if}
       {#if activeTab === 'content'}
-        <ContentSettings />
+        <ContentSettings onchange={oncontentchange} />
       {/if}
       {#if activeTab === 'services'}
         <ServiceSettings />

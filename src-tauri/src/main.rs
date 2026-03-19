@@ -13,10 +13,41 @@ mod text_gen;
 
 use config::{AppConfig, ConfigState};
 use services::ServiceManager;
-use state::{OllamaState, SceneHintState};
+use state::{OllamaState, SceneHintState, ServicePidState};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
+
+/// Kill a process and all its child processes by PID.
+fn kill_process_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let result = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+        match result {
+            Ok(output) if output.status.success() => {
+                println!("[Shutdown] Process tree {} killed successfully", pid);
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("[Shutdown] taskkill PID {} returned: {}", pid, stderr.trim());
+            }
+            Err(e) => println!("[Shutdown] Failed to kill PID {}: {}", pid, e),
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+        let _ = std::process::Command::new("pkill")
+            .args(["-P", &pid.to_string()])
+            .output();
+        println!("[Shutdown] Process {} and children killed", pid);
+    }
+}
 
 fn main() {
     tauri::Builder::default()
@@ -50,6 +81,10 @@ fn main() {
 
             app.manage(state);
             app.manage(SceneHintState(Mutex::new(HashMap::new())));
+            app.manage(ServicePidState {
+                ollama_pid: Mutex::new(None),
+                comfyui_pid: Mutex::new(None),
+            });
 
             // Pre-generate pose skeleton PNGs (fast no-op if already present)
             if let Ok(app_data_dir) = app.path().app_data_dir() {
@@ -60,9 +95,22 @@ fn main() {
 
             // Auto-start services if enabled (after all state is managed)
             if auto_start {
+                let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(services::startup::auto_start_services(sd_path, comfyui_path));
+                    let started = rt.block_on(services::startup::auto_start_services(sd_path, comfyui_path));
+
+                    // Store PIDs so we only kill what we started on exit
+                    if let Some(pid_state) = app_handle.try_state::<ServicePidState>() {
+                        if let Some(pid) = started.ollama_pid {
+                            *pid_state.ollama_pid.lock().unwrap() = Some(pid);
+                            println!("[ServiceManager] Stored Ollama PID: {}", pid);
+                        }
+                        if let Some(pid) = started.comfyui_pid {
+                            *pid_state.comfyui_pid.lock().unwrap() = Some(pid);
+                            println!("[ServiceManager] Stored ComfyUI PID: {}", pid);
+                        }
+                    }
                 });
             }
 
@@ -89,6 +137,7 @@ fn main() {
             commands::story::export_story,
             commands::story::get_story_images,
             commands::story::get_story_for_chat,
+            commands::story::update_story_rating,
             // Character & Image commands
             image_gen::sd_webui::generate_image,
             image_gen::sd_webui::generate_image_variation,
@@ -144,6 +193,9 @@ fn main() {
             text_gen::orchestrator::generate_scene_image_for_turn,
             text_gen::orchestrator::get_compression_diagnostics,
             text_gen::orchestrator::regenerate_story,
+            text_gen::orchestrator::free_vram,
+            text_gen::orchestrator::preview_scene_prompt,
+            text_gen::orchestrator::illustrate_scene_custom,
             // Scene commands
             commands::scene::create_scene,
             commands::scene::update_scene,
@@ -165,6 +217,32 @@ fn main() {
             services::setup::install_dependency,
             services::setup::install_all_dependencies,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error building tauri application")
+        .run(|app, event| {
+            match event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    println!("[Shutdown] App closing — stopping services we started...");
+
+                    if let Some(pid_state) = app.try_state::<ServicePidState>() {
+                        if let Some(pid) = pid_state.ollama_pid.lock().unwrap().take() {
+                            println!("[Shutdown] Killing Ollama (PID {})...", pid);
+                            kill_process_tree(pid);
+                        } else {
+                            println!("[Shutdown] Ollama was not started by us — leaving it alone");
+                        }
+
+                        if let Some(pid) = pid_state.comfyui_pid.lock().unwrap().take() {
+                            println!("[Shutdown] Killing ComfyUI (PID {})...", pid);
+                            kill_process_tree(pid);
+                        } else {
+                            println!("[Shutdown] ComfyUI was not started by us — leaving it alone");
+                        }
+                    }
+
+                    println!("[Shutdown] Cleanup complete");
+                }
+                _ => {}
+            }
+        });
 }

@@ -661,18 +661,42 @@ pub async fn generate_master_portrait(
     // 3. Build workflow
     let workflow = build_portrait_workflow(&prompt, &negative, seed, request.art_style.as_deref());
 
-    // 4. Queue prompt
+    // 4. Free VRAM: unload Ollama model before ComfyUI needs the GPU
+    {
+        let ollama_url = {
+            let config = config_state.0.lock().map_err(|e| e.to_string())?;
+            config.ollama_url.clone()
+        };
+        let client = reqwest::Client::new();
+        let unload_result = client
+            .post(format!("{}/api/generate", ollama_url))
+            .json(&serde_json::json!({
+                "model": crate::text_gen::prompts::STORY_MODEL,
+                "keep_alive": 0
+            }))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+        match unload_result {
+            Ok(_) => println!("[VRAM] Ollama model unloaded for portrait generation"),
+            Err(e) => println!("[VRAM] Ollama unload skipped ({})", e),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    // 5. Queue prompt
     let prompt_id = queue_workflow(base_url, &workflow).await?;
     println!("[MasterPortrait] Queued prompt: {}", prompt_id);
 
-    // 5. Poll for completion
+    // 6. Poll for completion
     let output_images = poll_until_complete(base_url, &prompt_id, PORTRAIT_TIMEOUT_SECS).await?;
     println!(
         "[MasterPortrait] Generation complete! {} images",
         output_images.len()
     );
+    println!("[VRAM] Portrait generation complete — Ollama model will reload on next story turn");
 
-    // 6. Download images to app data directory
+    // 7. Download images to app data directory
     let app_data = app
         .path()
         .app_data_dir()
@@ -697,6 +721,21 @@ pub async fn generate_master_portrait(
 
         image_paths.push(local_path.to_string_lossy().to_string());
         images_base64.push(b64);
+    }
+
+    // Free ComfyUI VRAM after portrait generation
+    {
+        let client = reqwest::Client::new();
+        let free_result = client
+            .post(format!("{}/free", base_url))
+            .json(&serde_json::json!({"unload_models": true}))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+        match free_result {
+            Ok(_) => println!("[VRAM] ComfyUI models unloaded after portrait generation"),
+            Err(e) => println!("[VRAM] ComfyUI free skipped ({})", e),
+        }
     }
 
     Ok(MasterPortraitResult {

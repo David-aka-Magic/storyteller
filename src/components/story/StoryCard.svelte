@@ -102,6 +102,11 @@
     {#if story.current_location}
       <span class="location-tag">📍 {story.current_location}</span>
     {/if}
+
+    <!-- Rating Badge -->
+    {#if story.content_rating === 'nsfw'}
+      <span class="rating-badge nsfw">NSFW</span>
+    {/if}
   </div>
 
   <!-- Card Body -->
@@ -249,6 +254,26 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* Rating badge */
+  .rating-badge {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .rating-badge.nsfw {
+    background: color-mix(in srgb, var(--accent-danger, #f85149) 20%, transparent);
+    color: var(--accent-danger, #f85149);
+    border: 1px solid color-mix(in srgb, var(--accent-danger, #f85149) 40%, transparent);
   }
 
   /* ── Card Body ── */

@@ -53,6 +53,7 @@ fn row_to_profile(r: &sqlx::sqlite::SqliteRow) -> CharacterProfile {
         eye_color: r.get("eye_color"),
         height_scale: r.get("height_scale"),
         weight_scale: r.get("weight_scale"),
+        content_rating: r.get("content_rating"),
     }
 }
 

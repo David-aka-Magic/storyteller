@@ -43,6 +43,7 @@ pub struct StorySession {
     pub last_played_at: String,
     /// The chat_id associated with this story (for message storage)
     pub chat_id: Option<i64>,
+    pub content_rating: String,
 }
 
 /// A single generated image for a story, with caption extracted from its message.
@@ -67,6 +68,7 @@ pub struct StorySummary {
     pub created_at: String,
     pub thumbnail_path: Option<String>,
     pub current_location: Option<String>,
+    pub content_rating: String,
 }
 
 /// Parameters for creating a new story.
@@ -148,6 +150,8 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) {
         .execute(pool).await.ok();
     sqlx::query("ALTER TABLE story_premises ADD COLUMN thumbnail_path TEXT")
         .execute(pool).await.ok();
+    sqlx::query("ALTER TABLE story_premises ADD COLUMN content_rating TEXT DEFAULT 'sfw'")
+        .execute(pool).await.ok();
 
     // Index for fast story lookups by last played
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_story_premises_last_played ON story_premises(last_played_at DESC)")
@@ -196,8 +200,11 @@ pub async fn create_story(
     title: String,
     description: String,
     initial_character_ids: Option<Vec<i64>>,
+    content_rating: Option<String>,
     state: State<'_, OllamaState>,
 ) -> Result<i64, String> {
+    let rating = content_rating.unwrap_or_else(|| "sfw".to_string());
+
     // 1. Create a chat for this story
     let chat_result = sqlx::query(
         "INSERT INTO chats (title, created_at) VALUES (?, CURRENT_TIMESTAMP)"
@@ -211,12 +218,13 @@ pub async fn create_story(
 
     // 2. Create the story premise with the chat link
     let story_result = sqlx::query(
-        "INSERT INTO story_premises (title, description, chat_id, created_at, last_played_at)
-         VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        "INSERT INTO story_premises (title, description, chat_id, content_rating, created_at, last_played_at)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
     )
     .bind(&title)
     .bind(&description)
     .bind(chat_id)
+    .bind(&rating)
     .execute(&state.db)
     .await
     .map_err(|e| format!("Failed to create story: {}", e))?;
@@ -255,7 +263,7 @@ pub async fn load_story(
     // 1. Load the story premise
     let story_row = sqlx::query(
         "SELECT id, title, description, created_at, last_played_at,
-                current_location, compressed_history_json, chat_id, thumbnail_path
+                current_location, compressed_history_json, chat_id, thumbnail_path, content_rating
          FROM story_premises WHERE id = ?"
     )
     .bind(story_id)
@@ -271,6 +279,7 @@ pub async fn load_story(
     let current_location: Option<String> = story_row.get("current_location");
     let compressed_json: Option<String> = story_row.get("compressed_history_json");
     let chat_id: Option<i64> = story_row.get("chat_id");
+    let content_rating: String = story_row.get::<Option<String>, _>("content_rating").unwrap_or_else(|| "sfw".to_string());
 
     // 2. Parse compressed history
     let compressed_history: CompressedHistory = compressed_json
@@ -282,7 +291,7 @@ pub async fn load_story(
         "SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style, c.hair_color,
                 c.body_type, c.personality, c.additional_notes, c.default_clothing,
                 c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
-                c.eye_color, c.height_scale, c.weight_scale
+                c.eye_color, c.height_scale, c.weight_scale, c.content_rating
          FROM characters c
          INNER JOIN story_characters sc ON sc.character_id = c.id
          WHERE sc.story_id = ?
@@ -316,6 +325,7 @@ pub async fn load_story(
             eye_color: r.get("eye_color"),
             height_scale: r.get("height_scale"),
             weight_scale: r.get("weight_scale"),
+            content_rating: r.get("content_rating"),
         })
         .collect();
 
@@ -403,6 +413,7 @@ pub async fn load_story(
         created_at,
         last_played_at,
         chat_id,
+        content_rating,
     })
 }
 
@@ -467,11 +478,17 @@ pub async fn save_story_state(
 }
 
 /// List all stories with summary information.
+/// If content_rating_filter is Some("sfw"), only SFW stories are returned.
 #[tauri::command]
 pub async fn list_stories(
+    content_rating_filter: Option<String>,
     state: State<'_, OllamaState>,
 ) -> Result<Vec<StorySummary>, String> {
-    let rows = sqlx::query(
+    let rating_clause = match content_rating_filter.as_deref() {
+        Some("sfw") => " WHERE sp.content_rating = 'sfw'",
+        _ => "",
+    };
+    let sql = format!(
         "SELECT
             sp.id,
             sp.title,
@@ -481,14 +498,17 @@ pub async fn list_stories(
             sp.current_location,
             sp.thumbnail_path,
             sp.chat_id,
+            sp.content_rating,
             (SELECT COUNT(*) FROM story_characters sc WHERE sc.story_id = sp.id) AS char_count,
             COALESCE(
                 (SELECT COUNT(*) FROM messages m WHERE m.chat_id = sp.chat_id AND m.role = 'user'),
                 0
             ) AS turn_count
-         FROM story_premises sp
-         ORDER BY sp.last_played_at DESC"
-    )
+         FROM story_premises sp{}
+         ORDER BY sp.last_played_at DESC",
+        rating_clause
+    );
+    let rows = sqlx::query(&sql)
     .fetch_all(&state.db)
     .await
     .map_err(|e| format!("Failed to list stories: {}", e))?;
@@ -509,11 +529,28 @@ pub async fn list_stories(
                 created_at: r.get::<Option<String>, _>("created_at").unwrap_or_default(),
                 thumbnail_path: thumbnail,
                 current_location: r.get("current_location"),
+                content_rating: r.get::<Option<String>, _>("content_rating").unwrap_or_else(|| "sfw".to_string()),
             }
         })
         .collect();
 
     Ok(summaries)
+}
+
+/// Update the content rating of a story.
+#[tauri::command]
+pub async fn update_story_rating(
+    story_id: i64,
+    content_rating: String,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    sqlx::query("UPDATE story_premises SET content_rating = ? WHERE id = ?")
+        .bind(&content_rating)
+        .bind(story_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| format!("Failed to update story rating: {}", e))?;
+    Ok(())
 }
 
 /// Look up the story linked to a given chat_id (reverse lookup).
@@ -887,7 +924,7 @@ async fn load_story_internal(
 ) -> Result<StorySession, String> {
     let story_row = sqlx::query(
         "SELECT id, title, description, created_at, last_played_at,
-                current_location, compressed_history_json, chat_id
+                current_location, compressed_history_json, chat_id, content_rating
          FROM story_premises WHERE id = ?"
     )
     .bind(story_id)
@@ -903,6 +940,7 @@ async fn load_story_internal(
     let current_location: Option<String> = story_row.get("current_location");
     let compressed_json: Option<String> = story_row.get("compressed_history_json");
     let chat_id: Option<i64> = story_row.get("chat_id");
+    let content_rating: String = story_row.get::<Option<String>, _>("content_rating").unwrap_or_else(|| "sfw".to_string());
 
     let compressed_history: CompressedHistory = compressed_json
         .and_then(|json_str| serde_json::from_str(&json_str).ok())
@@ -912,7 +950,7 @@ async fn load_story_internal(
         "SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style, c.hair_color,
                 c.body_type, c.personality, c.additional_notes, c.default_clothing,
                 c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
-                c.eye_color, c.height_scale, c.weight_scale
+                c.eye_color, c.height_scale, c.weight_scale, c.content_rating
          FROM characters c
          INNER JOIN story_characters sc ON sc.character_id = c.id
          WHERE sc.story_id = ?
@@ -946,6 +984,7 @@ async fn load_story_internal(
             eye_color: r.get("eye_color"),
             height_scale: r.get("height_scale"),
             weight_scale: r.get("weight_scale"),
+            content_rating: r.get("content_rating"),
         })
         .collect();
 
@@ -1014,6 +1053,7 @@ async fn load_story_internal(
         created_at,
         last_played_at,
         chat_id,
+        content_rating,
     })
 }
 

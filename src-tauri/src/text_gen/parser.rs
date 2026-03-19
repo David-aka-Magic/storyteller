@@ -542,11 +542,27 @@ pub fn parse_llm_output(raw: &str) -> ParsedTurn {
         return ParsedTurn { status, turn, raw_text: None };
     }
 
+    // Attempt 1.5: sanitize literal newlines inside strings and retry
+    let sanitized = sanitize_json_newlines(trimmed);
+    if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&sanitized) {
+        let warnings = validate_turn(&turn);
+        let status = if warnings.is_empty() { ParseStatus::Ok } else { ParseStatus::Partial(warnings) };
+        return ParsedTurn { status, turn, raw_text: None };
+    }
+
     // Attempt 2: strip // comments and retry direct parse
     let comment_stripped = strip_json_comments(trimmed);
     if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&comment_stripped) {
         let mut warnings = validate_turn(&turn);
         warnings.insert(0, "JSON contained comments that were stripped".to_string());
+        return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
+    }
+
+    // Attempt 2.5: sanitize newlines in comment-stripped text
+    let comment_stripped_sanitized = sanitize_json_newlines(&comment_stripped);
+    if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&comment_stripped_sanitized) {
+        let mut warnings = validate_turn(&turn);
+        warnings.insert(0, "JSON had comments stripped and literal newlines escaped".to_string());
         return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
     }
 
@@ -567,8 +583,16 @@ pub fn parse_llm_output(raw: &str) -> ParsedTurn {
             return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
         }
 
-        // 3c: try as just StoryJson (common partial failure — model only output story text)
-        if let Ok(story) = serde_json::from_str::<StoryJson>(&clean) {
+        // 3c: sanitize newlines in extracted+stripped JSON
+        let clean_sanitized = sanitize_json_newlines(&clean);
+        if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&clean_sanitized) {
+            let mut warnings = validate_turn(&turn);
+            warnings.insert(0, "JSON embedded in text with comments stripped and newlines escaped".to_string());
+            return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
+        }
+
+        // 3d: try as just StoryJson (common partial failure — model only output story text)
+        if let Ok(story) = serde_json::from_str::<StoryJson>(&clean_sanitized) {
             if !story.response.is_empty() {
                 let turn = LlmTurnOutput {
                     turn_id: 0,
@@ -662,6 +686,46 @@ fn validate_turn(turn: &LlmTurnOutput) -> Vec<String> {
 // ============================================================================
 // TEXT HELPERS
 // ============================================================================
+
+/// Replace literal newlines/carriage returns/tabs inside JSON string values
+/// with their `\n`/`\r`/`\t` escape sequences.
+///
+/// The LLM often embeds raw newlines inside JSON strings instead of escaping
+/// them, which makes `serde_json` reject the output even when everything else
+/// is correct.  This pass fixes that without touching structural whitespace.
+fn sanitize_json_newlines(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() + 64);
+    let mut in_string = false;
+    let mut escape = false;
+
+    for c in text.chars() {
+        if escape {
+            escape = false;
+            result.push(c);
+            continue;
+        }
+        if c == '\\' && in_string {
+            escape = true;
+            result.push(c);
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            result.push(c);
+            continue;
+        }
+        if in_string {
+            match c {
+                '\n' => { result.push_str("\\n"); continue; }
+                '\r' => { result.push_str("\\r"); continue; }
+                '\t' => { result.push_str("\\t"); continue; }
+                _ => {}
+            }
+        }
+        result.push(c);
+    }
+    result
+}
 
 /// Remove JavaScript-style // comments from JSON-like text.
 /// Skips characters inside strings to avoid mangling string content.

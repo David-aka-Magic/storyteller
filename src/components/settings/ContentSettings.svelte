@@ -2,6 +2,12 @@
 <script lang="ts">
   import { getConfig, updateConfig } from '$lib/api/config';
 
+  let {
+    onchange,
+  }: {
+    onchange?: () => void;
+  } = $props();
+
   let contentRating = $state<'sfw' | 'nsfw'>('sfw');
   let saving = $state(false);
 
@@ -25,6 +31,7 @@
       const config = await getConfig();
       await updateConfig({ ...config, content_rating: newRating });
       contentRating = newRating;
+      onchange?.();
     } catch (e) {
       console.error('Failed to save content setting:', e);
     }

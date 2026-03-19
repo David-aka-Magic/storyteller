@@ -27,8 +27,19 @@
   /** Whether an image is currently being generated for this specific turn. */
   export let isGeneratingImage: boolean = false;
 
+  /** Short scene description used as the collapsed prompt preview. */
+  export let scenePrompt: string = '';
+  /** Full enriched SDXL positive prompt (fetched lazily on expand). */
+  export let enrichedPrompt: string | null = null;
+  /** Full SDXL negative prompt (fetched lazily on expand). */
+  export let negativePrompt: string | null = null;
+  /** True while the parent is fetching the preview prompts. */
+  export let isLoadingPrompt: boolean = false;
+
   export let oncharacterclick: ((char: CharacterInScene) => void) | undefined = undefined;
-  export let onillustratescene: ((data: { storyText: string; messageId: number | null; turnNumber: number }) => void) | undefined = undefined;
+  export let onillustratescene: ((data: { storyText: string; messageId: number | null; turnNumber: number; positivePrompt?: string; negativePrompt?: string }) => void) | undefined = undefined;
+  /** Fired when the user expands the prompt editor — parent should fetch enrichedPrompt/negativePrompt. */
+  export let onexpandprompt: ((turnNumber: number) => void) | undefined = undefined;
   /** If set, shows a scene-change marker above this turn. */
   export let sceneTransition: { location: string; timeOfDay?: string; mood?: string } | null = null;
 
@@ -77,8 +88,42 @@
     }
   }
 
+  // ── Expandable prompt editor state ──
+  let promptExpanded = false;
+  let editedPositive = '';
+  let editedNegative = '';
+  let promptDirty = false;
+
+  // Sync from parent when prompts arrive (don't overwrite user edits)
+  $: if (enrichedPrompt !== null && !promptDirty) editedPositive = enrichedPrompt;
+  $: if (negativePrompt !== null && !promptDirty) editedNegative = negativePrompt;
+  // Also seed with scenePrompt as a placeholder before server data arrives
+  $: if (!editedPositive && scenePrompt) editedPositive = scenePrompt;
+
+  $: isEdited = promptDirty && (
+    editedPositive !== (enrichedPrompt ?? scenePrompt) ||
+    editedNegative !== (negativePrompt ?? '')
+  );
+
+  function togglePromptExpanded() {
+    promptExpanded = !promptExpanded;
+    if (promptExpanded && enrichedPrompt === null && !isLoadingPrompt) {
+      onexpandprompt?.(turnNumber);
+    }
+  }
+
+  function resetPrompts() {
+    editedPositive = enrichedPrompt ?? scenePrompt;
+    editedNegative = negativePrompt ?? '';
+    promptDirty = false;
+  }
+
   function handleIllustrate() {
-    onillustratescene?.({ storyText, messageId, turnNumber });
+    if (isEdited) {
+      onillustratescene?.({ storyText, messageId, turnNumber, positivePrompt: editedPositive, negativePrompt: editedNegative });
+    } else {
+      onillustratescene?.({ storyText, messageId, turnNumber });
+    }
   }
 
   $: paragraphs = formatNarrative(storyText);
@@ -197,21 +242,74 @@
       {/each}
     </div>
 
-    <!-- Illustrate / Redraw Image Button -->
-    <div class="image-actions">
-      {#if isGeneratingImage}
-        <span class="img-generating">
-          <span class="img-gen-pulse"></span>
-          Painting the scene...
-        </span>
-      {:else}
-        <button class="illustrate-btn" on:click={handleIllustrate} title={imagePath ? 'Generate a new image for this scene' : 'Generate an image for this scene'}>
-          {#if imagePath}
-            ↺ Redraw Image
-          {:else}
-            🎨 Illustrate Scene
+    <!-- Visual Prompt Bar + Illustrate Button -->
+    <div class="prompt-bar">
+      <!-- Collapsed header row: toggle arrow + short preview -->
+      <div class="prompt-header">
+        <button class="prompt-toggle" on:click={togglePromptExpanded} title={promptExpanded ? 'Collapse prompt editor' : 'Expand to edit prompt'}>
+          <span class="toggle-arrow" class:expanded={promptExpanded}>▶</span>
+          <span class="prompt-label">Visual Prompt</span>
+          {#if !promptExpanded}
+            <span class="prompt-preview">{scenePrompt || '(no scene data)'}</span>
           {/if}
         </button>
+
+        <!-- Action buttons always visible -->
+        {#if isGeneratingImage}
+          <span class="img-generating">
+            <span class="img-gen-pulse"></span>
+            Painting...
+          </span>
+        {:else}
+          <button
+            class="illustrate-btn"
+            class:edited={isEdited}
+            on:click={handleIllustrate}
+            title={imagePath ? 'Generate a new image for this scene' : 'Generate an image for this scene'}
+          >
+            {#if imagePath}↺ Redraw{:else}🎨 Illustrate{/if}{#if isEdited}<span class="edited-badge">edited</span>{/if}
+          </button>
+        {/if}
+      </div>
+
+      <!-- Expanded prompt editor -->
+      {#if promptExpanded}
+        <div class="prompt-editor">
+          {#if isLoadingPrompt}
+            <div class="prompt-loading">
+              <span class="img-gen-pulse"></span>
+              <span>Building prompt...</span>
+            </div>
+          {:else}
+            <div class="prompt-field">
+              <div class="field-header">
+                <span class="field-label">Positive</span>
+                {#if isEdited}
+                  <button class="reset-btn" on:click={resetPrompts} title="Reset to auto-generated">↺ Reset</button>
+                {/if}
+              </div>
+              <textarea
+                class="prompt-textarea"
+                bind:value={editedPositive}
+                on:input={() => { promptDirty = true; }}
+                rows="4"
+                placeholder="Quality tags, scene, character descriptions..."
+              ></textarea>
+            </div>
+            <div class="prompt-field">
+              <div class="field-header">
+                <span class="field-label">Negative</span>
+              </div>
+              <textarea
+                class="prompt-textarea negative"
+                bind:value={editedNegative}
+                on:input={() => { promptDirty = true; }}
+                rows="2"
+                placeholder="Things to avoid..."
+              ></textarea>
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
 
@@ -541,16 +639,154 @@
     opacity: 0.7;
   }
 
-  /* ── Image Actions (Illustrate / Redraw) ── */
-  .image-actions {
+  /* ── Prompt Bar (replaces image-actions) ── */
+  .prompt-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 12px;
+    background: color-mix(in srgb, var(--accent-primary, #58a6ff) 5%, var(--bg-secondary, #161b22));
+    border: 1px solid color-mix(in srgb, var(--accent-primary, #58a6ff) 12%, var(--border-secondary, #21262d));
+    border-radius: 8px;
+    margin-top: 4px;
+  }
+
+  .prompt-header {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 2px;
+    min-width: 0;
+  }
+
+  .prompt-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted, #6e7681);
+    cursor: pointer;
+    padding: 2px 0;
+    font-size: 0.78rem;
+    font-family: inherit;
+    text-align: left;
+    overflow: hidden;
+  }
+
+  .prompt-toggle:hover {
+    color: var(--text-secondary, #8b949e);
+  }
+
+  .toggle-arrow {
+    font-size: 0.6rem;
+    flex-shrink: 0;
+    transition: transform 0.15s;
+  }
+
+  .toggle-arrow.expanded {
+    transform: rotate(90deg);
+  }
+
+  .prompt-label {
+    font-weight: 600;
+    color: var(--text-muted, #6e7681);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .prompt-preview {
+    color: var(--text-muted, #6e7681);
+    font-style: italic;
+    font-size: 0.9em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.7;
+  }
+
+  .prompt-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .prompt-loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted, #6e7681);
+    font-style: italic;
+    padding: 4px 0;
+  }
+
+  .prompt-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .field-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .field-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted, #6e7681);
+  }
+
+  .reset-btn {
+    background: none;
+    border: none;
+    color: var(--accent-primary, #58a6ff);
+    font-size: 0.72rem;
+    cursor: pointer;
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+
+  .reset-btn:hover {
+    background: color-mix(in srgb, var(--accent-primary, #58a6ff) 10%, transparent);
+  }
+
+  .prompt-textarea {
+    width: 100%;
+    background: var(--bg-primary, #0d1117);
+    border: 1px solid var(--border-secondary, #21262d);
+    border-radius: 6px;
+    color: var(--text-secondary, #8b949e);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    padding: 6px 8px;
+    resize: vertical;
+    outline: none;
+    box-sizing: border-box;
+  }
+
+  .prompt-textarea:focus {
+    border-color: var(--accent-primary, #58a6ff);
+    color: var(--text-primary, #c9d1d9);
+  }
+
+  .prompt-textarea.negative {
+    color: color-mix(in srgb, var(--accent-danger, #f85149) 70%, var(--text-muted, #6e7681));
   }
 
   .illustrate-btn {
-    padding: 5px 12px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 11px;
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -560,6 +796,7 @@
     font-weight: 500;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .illustrate-btn:hover {
@@ -568,13 +805,28 @@
     color: var(--accent-primary, #58a6ff);
   }
 
+  .illustrate-btn.edited {
+    border-color: rgba(88, 166, 255, 0.35);
+    color: var(--accent-primary, #58a6ff);
+  }
+
+  .edited-badge {
+    font-size: 0.68rem;
+    font-weight: 400;
+    opacity: 0.75;
+    padding: 1px 4px;
+    background: rgba(88, 166, 255, 0.15);
+    border-radius: 3px;
+  }
+
   .img-generating {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     font-size: 0.78rem;
     color: var(--text-muted, #6e7681);
     font-style: italic;
+    flex-shrink: 0;
   }
 
   .img-gen-pulse {

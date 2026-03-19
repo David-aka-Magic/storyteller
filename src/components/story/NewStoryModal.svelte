@@ -11,12 +11,13 @@
 -->
 <script lang="ts">
   import type { CharacterProfile } from '../../lib/types';
+  import { getConfig } from '$lib/api/config';
 
   export let show: boolean = false;
   /** All available characters the user can pick from */
   export let availableCharacters: CharacterProfile[] = [];
 
-  export let oncreate: ((data: { title: string; description: string; characterIds: number[] }) => void) | undefined = undefined;
+  export let oncreate: ((data: { title: string; description: string; characterIds: number[]; contentRating: string }) => void) | undefined = undefined;
   export let onclose: (() => void) | undefined = undefined;
 
   // ── Wizard State ──
@@ -27,18 +28,20 @@
   let title = '';
   let description = '';
   let selectedCharIds: Set<number> = new Set();
+  let contentRating: 'sfw' | 'nsfw' = 'sfw';
 
   // ── Validation ──
   $: titleValid = title.trim().length >= 2;
   $: descValid = description.trim().length >= 10;
   $: step1Valid = titleValid && descValid;
 
-  // ── Reset on show ──
+  // ── Reset on show, read config for default rating ──
   $: if (show) {
     step = 1;
     title = '';
     description = '';
     selectedCharIds = new Set();
+    getConfig().then(cfg => { contentRating = cfg.content_rating; }).catch(() => {});
   }
 
   function nextStep() {
@@ -64,6 +67,7 @@
       title: title.trim(),
       description: description.trim(),
       characterIds: Array.from(selectedCharIds),
+      contentRating,
     });
   }
 
@@ -120,6 +124,7 @@
             ></div>
           {/each}
         </div>
+        <span class="rating-badge" class:nsfw={contentRating === 'nsfw'}>{contentRating.toUpperCase()}</span>
       </div>
       <button class="close-btn" on:click={close}>✕</button>
     </div>
@@ -258,6 +263,12 @@
               <span class="review-value desc-preview">{description}</span>
             </div>
             <div class="review-row">
+              <span class="review-label">Rating</span>
+              <span class="review-value">
+                <span class="rating-badge" class:nsfw={contentRating === 'nsfw'}>{contentRating.toUpperCase()}</span>
+              </span>
+            </div>
+            <div class="review-row">
               <span class="review-label">Characters</span>
               <span class="review-value">
                 {#if selectedCharIds.size === 0}
@@ -374,6 +385,23 @@
 
   .step-dot.completed {
     background: var(--accent-success, #238636);
+  }
+
+  .rating-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(35, 134, 54, 0.18);
+    color: var(--accent-success, #3fb950);
+    border: 1px solid rgba(35, 134, 54, 0.35);
+  }
+
+  .rating-badge.nsfw {
+    background: rgba(248, 81, 73, 0.18);
+    color: var(--accent-danger, #f85149);
+    border-color: rgba(248, 81, 73, 0.35);
   }
 
   .close-btn {

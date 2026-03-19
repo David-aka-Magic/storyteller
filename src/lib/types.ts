@@ -22,6 +22,10 @@ export interface ChatMessage {
   sceneCharacterNames?: string[];
   /** Poses per character (matches sceneCharacterNames order). Used to select ControlNet skeleton. */
   sceneCharacterPoses?: string[];
+  /** Full enriched positive SDXL prompt for this turn (from backend). */
+  enrichedPrompt?: string;
+  /** Full negative SDXL prompt for this turn (from backend). */
+  negativePrompt?: string;
 }
 
 export interface ChatSummary {
@@ -97,6 +101,7 @@ export interface CharacterProfile {
   eye_color?: string;
   height_scale?: number;   // 1-5 (1=Very Short … 5=Very Tall), default 3
   weight_scale?: number;   // 1-5 (1=Very Slim … 5=Very Heavyset), default 3
+  content_rating?: 'sfw' | 'nsfw';
 }
 
 /** Lightweight lookup result for LLM integration. */
@@ -156,6 +161,7 @@ export interface StorySession {
   last_played_at: string;
   /** The chat_id associated with this story (for message storage) */
   chat_id: number | null;
+  content_rating: 'sfw' | 'nsfw';
 }
 
 /** Lightweight summary for the story list view. */
@@ -169,6 +175,7 @@ export interface StorySummary {
   created_at: string;
   thumbnail_path: string | null;
   current_location: string | null;
+  content_rating: 'sfw' | 'nsfw';
 }
 
 /** A generated scene image belonging to a story. */
@@ -419,6 +426,10 @@ export interface StoryTurnResult {
   assistant_message_id: number | null;
   /** Scene DB id active after this turn (auto-created or matched). Null if no story selected. */
   active_scene_id: number | null;
+  /** Full enriched positive SDXL prompt built for this turn. Null if no renderable chars. */
+  enriched_prompt: string | null;
+  /** Full negative SDXL prompt built for this turn. */
+  negative_prompt: string | null;
 }
 
 // ---- Helpers ----

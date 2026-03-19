@@ -54,10 +54,10 @@
     imageErrors = next;
   }
 
-  async function generateImage(msg: ChatMessage) {
+  async function generateImage(msg: ChatMessage, positivePrompt?: string, negativePrompt?: string) {
     if (generatingImages.has(msg.id)) return;
-    const prompt = msg.data?.sd_prompt || msg.data?.story;
-    if (!prompt) {
+    const basePrompt = msg.data?.sd_prompt || msg.data?.story;
+    if (!basePrompt && !positivePrompt) {
       setImageError(msg.id, 'No text available to generate an image.');
       return;
     }
@@ -65,7 +65,7 @@
     setImageError(msg.id, null);
     generatingImages = new Set([...generatingImages, msg.id]);
     try {
-      const path = await generateSceneImageForTurn(prompt, storyId ?? undefined, msg.sceneCharacterNames, msg.sceneCharacterPoses);
+      const path = await generateSceneImageForTurn(basePrompt ?? '', storyId ?? undefined, msg.sceneCharacterNames, msg.sceneCharacterPoses, positivePrompt, negativePrompt);
       const base64 = await readFileBase64(path);
       onimagegenerated?.(msg.id, `data:image/png;base64,${base64}`, path);
       await scrollToBottom();
@@ -125,7 +125,7 @@
             isLoading={isbusy}
             isGeneratingImage={generatingImages.has(msg.id)}
             imageError={imageErrors.get(msg.id)}
-            onGenerateImage={() => generateImage(msg)}
+            onGenerateImage={(pos, neg) => generateImage(msg, pos, neg)}
             onRegenerate={regenerateText}
           />
         {/each}

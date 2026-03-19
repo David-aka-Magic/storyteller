@@ -108,6 +108,19 @@ pub struct StoryTurnResult {
     /// Scene DB id that is active after this turn (auto-created or matched).
     /// The frontend uses this to refresh the ScenePanel.
     pub active_scene_id: Option<i64>,
+    /// Full enriched positive SDXL prompt built for this turn.
+    /// None if no renderable characters with reference images exist.
+    pub enriched_prompt: Option<String>,
+    /// Full negative SDXL prompt built for this turn.
+    pub negative_prompt: Option<String>,
+}
+
+/// Preview of the enriched SDXL prompts for a scene, without generating an image.
+/// Returned by `preview_scene_prompt` so the frontend can show and edit them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenePromptPreview {
+    pub positive: String,
+    pub negative: String,
 }
 
 // ============================================================================
@@ -479,6 +492,104 @@ fn build_characters_in_scene(
         .collect()
 }
 
+/// Tell Ollama to unload the current model from VRAM immediately.
+/// This frees GPU memory for ComfyUI image generation.
+/// The model will be automatically reloaded on the next /api/generate call.
+pub(crate) async fn unload_ollama_model(ollama_url: &str) {
+    println!(
+        "[VRAM] Requesting Ollama to unload model '{}' from VRAM...",
+        STORY_MODEL
+    );
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/generate", ollama_url);
+
+    let result = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "model": STORY_MODEL,
+            "keep_alive": 0
+        }))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            println!("[VRAM] Ollama model unloaded successfully — VRAM freed for ComfyUI");
+        }
+        Ok(resp) => {
+            println!(
+                "[VRAM] Ollama unload returned status {}, continuing anyway",
+                resp.status()
+            );
+        }
+        Err(e) => {
+            // Non-fatal — if Ollama is already dead or unresponsive, VRAM is free anyway
+            println!(
+                "[VRAM] Could not reach Ollama to unload model ({}), continuing anyway",
+                e
+            );
+        }
+    }
+
+    // Give the GPU a moment to actually release the memory
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
+/// Tell ComfyUI to unload all models from VRAM.
+/// Uses the /free endpoint to release GPU memory after image generation.
+/// Models will be automatically reloaded on the next generation request.
+pub(crate) async fn unload_comfyui_models(comfyui_url: &str) {
+    println!("[VRAM] Requesting ComfyUI to free GPU memory...");
+    let client = reqwest::Client::new();
+    let url = format!("{}/free", comfyui_url);
+
+    let result = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "unload_models": true
+        }))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            println!("[VRAM] ComfyUI models unloaded — VRAM freed");
+        }
+        Ok(resp) => {
+            println!(
+                "[VRAM] ComfyUI free returned status {}, continuing",
+                resp.status()
+            );
+        }
+        Err(e) => {
+            println!(
+                "[VRAM] Could not reach ComfyUI to free models ({}), continuing",
+                e
+            );
+        }
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
+/// Free all GPU memory by unloading both Ollama and ComfyUI models.
+/// Called when switching stories or from a manual "Free VRAM" button.
+#[tauri::command]
+pub async fn free_vram(config_state: State<'_, ConfigState>) -> Result<(), String> {
+    let ollama_url = {
+        let config = config_state.0.lock().map_err(|e| e.to_string())?;
+        config.ollama_url.clone()
+    };
+
+    unload_ollama_model(&ollama_url).await;
+    unload_comfyui_models("http://localhost:8188").await;
+
+    println!("[VRAM] All models unloaded — GPU memory freed");
+    Ok(())
+}
+
 /// Build a per-character prompt fragment for image generation.
 fn character_prompt_fragment(
     char_in_scene: &CharacterInScene,
@@ -495,11 +606,13 @@ fn character_prompt_fragment(
     }
 
     if !char_in_scene.view.is_empty() && char_in_scene.view != "NONE" {
-        let view_override = match char_in_scene.view.to_uppercase().as_str() {
-            "PORTRAIT" | "UPPER-BODY" | "UPPER_BODY" => "full body".to_string(),
-            _ => char_in_scene.view.to_lowercase().replace('-', " "),
+        let view_tag = match char_in_scene.view.to_uppercase().as_str() {
+            "PORTRAIT" => "upper body, close-up".to_string(),
+            "UPPER-BODY" | "UPPER_BODY" => "medium shot, from waist up, showing torso and head".to_string(),
+            "FULL-BODY" | "FULL_BODY" => "full body, wide shot".to_string(),
+            _ => "medium shot, from waist up".to_string(),
         };
-        parts.push(view_override);
+        parts.push(view_tag);
     }
     if !char_in_scene.expression.is_empty() {
         parts.push(char_in_scene.expression.clone());
@@ -720,14 +833,18 @@ async fn generate_image_for_scene(
         height: Some(DEFAULT_IMAGE_HEIGHT),
         negative_prompt: Some(
             "(worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
-             close-up, closeup, head shot, headshot, cropped, zoomed in".to_string()
+             close-up, closeup, head shot, headshot, cropped, zoomed in, \
+             cowboy hat, cowboy, western clothing".to_string()
         ),
         timeout_secs: None,
         controlnet_image_path: None,
         controlnet_strength: None,
     };
 
-    // 7. Run the ComfyUI pipeline
+    // 7. Free VRAM: unload Ollama before ComfyUI needs the GPU
+    unload_ollama_model("http://localhost:11434").await;
+
+    // 8. Run the ComfyUI pipeline
     let output_dir = app_data.join("scene_images");
     match comfyui_api::generate_scene_image(&request, &output_dir).await {
         Ok(result) => {
@@ -737,6 +854,8 @@ async fn generate_image_for_scene(
                 primary_image,
                 result.image_paths.len()
             );
+            unload_comfyui_models("http://localhost:8188").await;
+            println!("[VRAM] Image generation complete — both models unloaded, VRAM clean");
             (primary_image, None)
         }
         Err(e) => {
@@ -1144,6 +1263,113 @@ pub async fn process_story_turn(
         ref_count
     );
 
+    // ── Step 4.5: Build enriched prompt preview for the frontend ─────────────
+    // Done here so the frontend has the full SDXL prompt immediately after a turn,
+    // without needing a separate `preview_scene_prompt` call.
+
+    let (enriched_prompt_preview, negative_prompt_preview): (Option<String>, Option<String>) = {
+        // Filter to renderable characters that have reference images
+        let renderable_with_refs: Vec<(&CharacterInScene, &crate::models::CharacterLookup)> =
+            characters_in_scene
+                .iter()
+                .zip(lookup_results.iter())
+                .filter(|(cis, _)| cis.needs_render && cis.has_reference_image)
+                .filter_map(|(cis, (_, db_opt))| db_opt.as_ref().map(|db| (cis, db)))
+                .collect();
+
+        if renderable_with_refs.is_empty() {
+            (None, None)
+        } else {
+            let num_chars = renderable_with_refs.len().min(2);
+            let regions: Vec<&str> = if num_chars == 1 { vec!["center"] } else { vec!["left", "right"] };
+
+            let genders: Vec<&'static str> = renderable_with_refs.iter()
+                .take(num_chars)
+                .map(|(_, db)| infer_gender(db))
+                .collect();
+
+            let subject_count_tag = match num_chars {
+                1 => match genders[0] { "female" => "1girl", "male" => "1boy", _ => "1person" },
+                2 => match (genders[0], genders[1]) {
+                    ("female", "female") => "2girls",
+                    ("male",   "male")   => "2boys",
+                    ("female", "male") | ("male", "female") => "1girl 1boy",
+                    _ => "2people",
+                },
+                _ => "people",
+            };
+
+            let mut char_segs: Vec<String> = Vec::new();
+            for (i, (_, db)) in renderable_with_refs.iter().enumerate().take(num_chars) {
+                let region = regions.get(i).copied().unwrap_or("center");
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(ref sd) = db.sd_prompt {
+                    let clean: String = sd
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| {
+                            let l = s.to_lowercase();
+                            !l.contains("solo") && !l.contains("portrait")
+                                && !l.contains("looking at viewer")
+                                && !l.contains("looking at camera")
+                                && !l.contains("neutral") && !l.contains("background")
+                                && !l.contains("masterpiece") && !l.contains("best quality")
+                                && !l.contains("detailed face") && !l.contains("detailed eyes")
+                                && !l.contains("1girl") && !l.contains("1boy")
+                                && !l.contains("1woman") && !l.contains("1man")
+                                && !l.contains("upper body") && !l.contains("close up")
+                                && !l.contains("closeup") && !l.contains("headshot")
+                        })
+                        .collect::<Vec<&str>>()
+                        .join(", ");
+                    if !clean.is_empty() { parts.push(clean); }
+                }
+                if let Some(ref cloth) = db.default_clothing {
+                    if !cloth.is_empty() { parts.push(cloth.clone()); }
+                }
+                if infer_gender(db) == "female" {
+                    parts.push("soft feminine features, smooth jawline, delicate face, no cleft chin".to_string());
+                }
+                let desc = if parts.is_empty() { "a person".to_string() } else { parts.join(", ") };
+                let prefix = match region {
+                    "left"  => "a person on the left side of the scene,",
+                    "right" => "a person on the right side of the scene,",
+                    _       => "a person in the center of the scene,",
+                };
+                char_segs.push(format!("{} {}", prefix, desc));
+            }
+
+            let sp = parsed.scene_prompt_fragment();
+            let ep = format!(
+                "(masterpiece, best quality, highly detailed, cinematic composition), \
+                 (medium shot, waist up, head and torso visible:1.2), {}, {}, {}, \
+                 (detailed face, clear face:1.1)",
+                subject_count_tag, sp, char_segs.join(", ")
+            );
+
+            let sfw_neg = if content_rating == "sfw" {
+                ", nsfw, nude, naked, nudity, bare chest, cleavage, lingerie, underwear, \
+                 suggestive, seductive, sexual, explicit, provocative, revealing clothing, \
+                 bikini, swimsuit, exposed skin, nipples, breasts"
+            } else {
+                ""
+            };
+            let neg = format!(
+                "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), \
+                 decapitated, (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+                 close-up, closeup, head shot, headshot, cropped, zoomed in, \
+                 cowboy hat, cowboy, western clothing{}",
+                sfw_neg
+            );
+
+            println!(
+                "[Orchestrator] Built enriched prompt preview ({} chars, {} chars neg)",
+                ep.len(), neg.len()
+            );
+            (Some(ep), Some(neg))
+        }
+    };
+
     // ── Step 5: Conditional image generation ──────────────────────────
 
     let flags = parsed.flags();
@@ -1230,6 +1456,8 @@ pub async fn process_story_turn(
         image_generation_error,
         assistant_message_id,
         active_scene_id: post_turn_active_scene_id,
+        enriched_prompt: enriched_prompt_preview,
+        negative_prompt: negative_prompt_preview,
     })
 }
 
@@ -1239,6 +1467,8 @@ pub async fn generate_scene_image_for_turn(
     story_id: Option<i64>,
     character_names: Option<Vec<String>>,
     character_poses: Option<Vec<String>>,
+    positive_prompt_override: Option<String>,
+    negative_prompt_override: Option<String>,
     app: AppHandle,
     state: State<'_, OllamaState>,
     config_state: State<'_, ConfigState>,
@@ -1575,7 +1805,7 @@ pub async fn generate_scene_image_for_turn(
     };
 
     let enriched_prompt = format!(
-        "(masterpiece, best quality, highly detailed, cinematic composition), (head and face visible, face in frame:1.4), {}{}, {}, {}, (detailed face, clear face, realistic face:1.3)",
+        "(masterpiece, best quality, highly detailed, cinematic composition), (medium shot, waist up, head and torso visible:1.2), {}{}, {}, {}, (detailed face, clear face:1.1)",
         pose_prefix,
         subject_count_tag,
         scene_prompt,
@@ -1587,6 +1817,15 @@ pub async fn generate_scene_image_for_turn(
         &enriched_prompt[..enriched_prompt.len().min(200)]
     );
     println!("[Orchestrator][DEBUG] Full enriched prompt:\n{}", &enriched_prompt);
+
+    // Apply user overrides if provided — skip auto-built prompts in favour of edited ones
+    let (final_positive, final_negative_override) = if let Some(pos) = positive_prompt_override {
+        let neg = negative_prompt_override;
+        println!("[Orchestrator] Using custom prompts from user edit ({} chars)", pos.len());
+        (pos, neg)
+    } else {
+        (enriched_prompt, None)
+    };
 
     // Generate per-character masks for 2-char workflow
     let mask_paths: Vec<String> = if num_chars > 1 {
@@ -1647,7 +1886,7 @@ pub async fn generate_scene_image_for_turn(
     };
 
     let request = comfyui_api::ImageGenRequest {
-        scene_prompt: enriched_prompt,
+        scene_prompt: final_positive.clone(),
         characters: char_inputs,
         mask_paths,
         workflow_template: workflow_path,
@@ -1657,12 +1896,13 @@ pub async fn generate_scene_image_for_turn(
         cfg: None,
         width: Some(scene_width),
         height: Some(scene_height),
-        negative_prompt: Some(format!(
+        negative_prompt: Some(final_negative_override.unwrap_or_else(|| format!(
             "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), decapitated, \
              (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
-             close-up, closeup, head shot, headshot, cropped, zoomed in{}",
+             close-up, closeup, head shot, headshot, cropped, zoomed in, \
+             cowboy hat, cowboy, western clothing{}",
             sfw_negative
-        )),
+        ))),
         timeout_secs: Some(600),
         controlnet_image_path,
         controlnet_strength: Some(controlnet_strength),
@@ -1693,6 +1933,16 @@ pub async fn generate_scene_image_for_turn(
         "[Orchestrator][DEBUG] ImageGenRequest JSON:\n{}",
         serde_json::to_string_pretty(&request).unwrap_or_else(|_| "SERIALIZATION_FAILED".to_string())
     );
+
+    // Free VRAM: unload Ollama model before ComfyUI needs the GPU
+    {
+        let ollama_url = {
+            let config = config_state.0.lock().map_err(|e| e.to_string())?;
+            config.ollama_url.clone()
+        };
+        unload_ollama_model(&ollama_url).await;
+    }
+
     let result = comfyui_api::generate_scene_image(&request, &output_dir)
         .await
         .map_err(|e| {
@@ -1703,7 +1953,407 @@ pub async fn generate_scene_image_for_turn(
     let image_path = result.image_paths.into_iter().next()
         .ok_or_else(|| "No image generated".to_string())?;
     println!("[Orchestrator] Scene image generated successfully: {}", image_path);
+    unload_comfyui_models("http://localhost:8188").await;
+    println!("[VRAM] Image generation complete — both models unloaded, VRAM clean");
     Ok(image_path)
+}
+
+/// Generate a scene image using user-provided prompts (skips enrichment).
+/// Reuses the same character reference / mask / workflow pipeline as the normal
+/// illustration path, but substitutes the caller's positive and negative prompts
+/// directly instead of building them from LLM output.
+#[tauri::command]
+pub async fn illustrate_scene_custom(
+    story_id: i64,
+    chat_id: i64,
+    message_id: i64,
+    positive_prompt: String,
+    negative_prompt: String,
+    config_state: State<'_, ConfigState>,
+    state: State<'_, OllamaState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    println!(
+        "[Orchestrator] illustrate_scene_custom: story={} message={}",
+        story_id, message_id
+    );
+    println!(
+        "[Orchestrator] Custom positive (first 150): {}",
+        &positive_prompt[..positive_prompt.len().min(150)]
+    );
+
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    // Load characters with reference images for this story
+    let all_characters = get_characters_with_references(Some(story_id), &state).await?;
+
+    if all_characters.is_empty() {
+        return Err(
+            "No characters with reference images found. \
+             To generate scene images, open a character in the Character panel, \
+             generate a Master Portrait, then save it as the reference image."
+                .to_string(),
+        );
+    }
+
+    let num_chars = all_characters.len().min(2);
+    let workflow_path = select_workflow(num_chars, &app_data)?;
+
+    let regions: Vec<String> = match num_chars {
+        1 => vec!["center".to_string()],
+        _ => vec!["left".to_string(), "right".to_string()],
+    };
+
+    // Generate per-character masks for 2-char workflow (matches existing pipeline)
+    let mask_paths: Vec<String> = if num_chars > 1 {
+        let masks_dir = app_data.join("masks");
+        let mut paths = Vec::new();
+        for (i, region) in regions.iter().enumerate().take(num_chars) {
+            let mask_chars = vec![mask_generator::MaskCharacter {
+                name: all_characters.get(i).map(|c| c.name.clone()).unwrap_or_default(),
+                region: region.to_string(),
+                color_index: 0,
+            }];
+            let filename = format!("custom_mask_char{}.png", i);
+            match mask_generator::generate_mask(
+                &mask_chars,
+                DEFAULT_IMAGE_WIDTH,
+                DEFAULT_IMAGE_HEIGHT,
+                &masks_dir,
+                Some(&filename),
+            ) {
+                Ok(r) => paths.push(r.path),
+                Err(e) => return Err(format!("Mask gen failed for char {}: {}", i, e)),
+            }
+        }
+        paths
+    } else {
+        vec![]
+    };
+
+    let char_inputs: Vec<comfyui_api::CharacterInput> = all_characters
+        .iter()
+        .enumerate()
+        .take(num_chars)
+        .map(|(i, c)| comfyui_api::CharacterInput {
+            name: c.name.clone(),
+            reference_image_path: c.master_image_path.clone().unwrap_or_default(),
+            region: regions.get(i).cloned().unwrap_or_else(|| "center".to_string()),
+            prompt: String::new(),
+        })
+        .collect();
+
+    let (scene_width, scene_height) = if num_chars == 1 {
+        (896u32, 1152u32)
+    } else {
+        (1152u32, 896u32)
+    };
+
+    let request = comfyui_api::ImageGenRequest {
+        scene_prompt: positive_prompt.clone(),
+        characters: char_inputs,
+        mask_paths,
+        workflow_template: workflow_path,
+        comfyui_url: None,
+        seed: Some(rand::random::<i64>().abs()),
+        steps: None,
+        cfg: None,
+        width: Some(scene_width),
+        height: Some(scene_height),
+        negative_prompt: Some(negative_prompt),
+        timeout_secs: Some(600),
+        controlnet_image_path: None,
+        controlnet_strength: None,
+    };
+
+    // Free VRAM before ComfyUI needs the GPU
+    {
+        let ollama_url = {
+            let config = config_state.0.lock().map_err(|e| e.to_string())?;
+            config.ollama_url.clone()
+        };
+        unload_ollama_model(&ollama_url).await;
+    }
+
+    let output_dir = app_data.join("generated_images");
+    let result = comfyui_api::generate_scene_image(&request, &output_dir)
+        .await
+        .map_err(|e| {
+            println!("[Orchestrator] Custom illustration FAILED: {}", e);
+            e.to_string()
+        })?;
+
+    let image_path = result
+        .image_paths
+        .into_iter()
+        .next()
+        .ok_or_else(|| "No image generated".to_string())?;
+
+    unload_comfyui_models("http://localhost:8188").await;
+    println!("[Orchestrator] Custom illustration complete: {}", image_path);
+
+    // Persist the image — insert or replace so re-illustration overwrites the old entry
+    sqlx::query(
+        "INSERT OR REPLACE INTO images (message_id, chat_id, file_path) VALUES (?, ?, ?)",
+    )
+    .bind(message_id)
+    .bind(chat_id)
+    .bind(&image_path)
+    .execute(&state.db)
+    .await
+    .ok();
+
+    Ok(image_path)
+}
+
+/// Returns the full enriched SDXL prompts for a scene without generating an image.
+/// Used by the frontend to show and edit prompts before illustration.
+#[tauri::command]
+pub async fn preview_scene_prompt(
+    scene_prompt: String,
+    story_id: Option<i64>,
+    character_names: Option<Vec<String>>,
+    character_poses: Option<Vec<String>>,
+    app: AppHandle,
+    state: State<'_, OllamaState>,
+    config_state: State<'_, ConfigState>,
+) -> Result<ScenePromptPreview, String> {
+    let app_data = app.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    let (content_rating, _controlnet_enabled, _controlnet_strength) = {
+        let config = config_state.0.lock().map_err(|e| e.to_string())?;
+        (config.content_rating.clone(), config.controlnet_pose_enabled, config.controlnet_pose_strength)
+    };
+
+    let all_characters = get_characters_with_references(story_id, &state).await?;
+
+    // Load active scene for prompt enhancement
+    let active_scene_data: Option<(i64, String, Option<String>, Option<String>, Option<String>)> =
+        if let Some(sid) = story_id {
+            sqlx::query(
+                "SELECT s.id, s.location, s.time_of_day, s.mood, s.name \
+                 FROM scenes s \
+                 INNER JOIN story_premises sp ON sp.active_scene_id = s.id \
+                 WHERE sp.id = ?",
+            )
+            .bind(sid)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| {
+                let scene_id: i64 = r.get("id");
+                let location: Option<String> = r.get("location");
+                let time: Option<String> = r.get("time_of_day");
+                let mood: Option<String> = r.get("mood");
+                let name: String = r.get("name");
+                (scene_id, name, location, time, mood)
+            })
+        } else {
+            None
+        };
+
+    let scene_char_ids: Option<Vec<i64>> = if let Some((scene_id, ..)) = &active_scene_data {
+        let rows = sqlx::query(
+            "SELECT character_id FROM scene_characters WHERE scene_id = ?",
+        )
+        .bind(scene_id)
+        .fetch_all(&state.db)
+        .await
+        .ok();
+        rows.map(|rs| rs.iter().map(|r| r.get::<i64, _>("character_id")).collect())
+    } else {
+        None
+    };
+
+    let characters: Vec<CharacterLookup> = if let Some(ref names) = character_names {
+        let names_lower: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let filtered: Vec<CharacterLookup> = all_characters
+            .iter()
+            .filter(|c| names_lower.contains(&c.name.to_lowercase()))
+            .cloned()
+            .collect();
+        if filtered.is_empty() { all_characters } else { filtered }
+    } else {
+        all_characters
+    };
+
+    let characters: Vec<CharacterLookup> = if character_names.is_none() {
+        if let Some(ref ids) = scene_char_ids {
+            if !ids.is_empty() {
+                let filtered: Vec<CharacterLookup> = characters
+                    .iter()
+                    .filter(|c| ids.contains(&c.id))
+                    .cloned()
+                    .collect();
+                if filtered.is_empty() { characters } else { filtered }
+            } else {
+                characters
+            }
+        } else {
+            characters
+        }
+    } else {
+        characters
+    };
+
+    if characters.is_empty() {
+        return Err(
+            "No characters with reference images found. \
+             To generate scene images, open a character, generate a Master Portrait, \
+             then save it as the reference image.".to_string()
+        );
+    }
+
+    let num_chars = characters.len().min(2);
+    let regions: Vec<String> = match num_chars {
+        1 => vec!["center".to_string()],
+        _ => vec!["left".to_string(), "right".to_string()],
+    };
+
+    let genders: Vec<&'static str> = characters.iter().take(num_chars).map(infer_gender).collect();
+    let subject_count_tag = match num_chars {
+        1 => match genders[0] {
+            "female" => "1girl",
+            "male"   => "1boy",
+            _        => "1person",
+        },
+        2 => match (genders[0], genders[1]) {
+            ("female", "female")                   => "2girls",
+            ("male",   "male")                     => "2boys",
+            ("female", "male") | ("male", "female") => "1girl 1boy",
+            ("female", _) | (_, "female")          => "1girl 1person",
+            ("male",   _) | (_, "male")            => "1boy 1person",
+            _                                      => "2people",
+        },
+        _ => "people",
+    };
+
+    let pose_emphasis = extract_pose_emphasis(&scene_prompt);
+
+    let mut char_segments: Vec<String> = Vec::new();
+    for (i, character) in characters.iter().enumerate().take(num_chars) {
+        let region = regions.get(i).map(|s| s.as_str()).unwrap_or("center");
+        let mut char_parts: Vec<String> = Vec::new();
+        if let Some(ref sd) = character.sd_prompt {
+            if !sd.is_empty() {
+                let scene_safe: String = sd
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| {
+                        let lower = s.to_lowercase();
+                        !lower.contains("solo")
+                            && !lower.contains("portrait")
+                            && !lower.contains("looking at viewer")
+                            && !lower.contains("looking at camera")
+                            && !lower.contains("neutral")
+                            && !lower.contains("background")
+                            && !lower.contains("masterpiece")
+                            && !lower.contains("best quality")
+                            && !lower.contains("detailed face")
+                            && !lower.contains("detailed eyes")
+                            && !lower.contains("1girl")
+                            && !lower.contains("1boy")
+                            && !lower.contains("1woman")
+                            && !lower.contains("1man")
+                            && !lower.contains("upper body")
+                            && !lower.contains("close up")
+                            && !lower.contains("closeup")
+                            && !lower.contains("headshot")
+                    })
+                    .collect::<Vec<&str>>()
+                    .join(", ");
+                if !scene_safe.is_empty() {
+                    char_parts.push(scene_safe);
+                }
+            }
+        }
+        if let Some(ref clothing) = character.default_clothing {
+            if !clothing.is_empty() {
+                char_parts.push(clothing.clone());
+            }
+        }
+        if infer_gender(character) == "female" {
+            char_parts.push("soft feminine features, smooth jawline, delicate face, no cleft chin".to_string());
+        }
+        let char_desc = if char_parts.is_empty() {
+            "a person".to_string()
+        } else {
+            char_parts.join(", ")
+        };
+        let region_prefix = match region {
+            "left" => "a person on the left side of the scene,",
+            "right" => "a person on the right side of the scene,",
+            _ => "a person in the center of the scene,",
+        };
+        char_segments.push(format!("{} {}", region_prefix, char_desc));
+    }
+
+    // Enhance scene_prompt with active scene metadata
+    let scene_prompt = if let Some((_, _, ref location, ref time, ref mood)) = active_scene_data {
+        let enhancement_parts: Vec<String> = [
+            location.clone(),
+            time.clone().map(|t| format!("{} lighting", t)),
+            mood.clone().map(|m| format!("{} atmosphere", m)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !enhancement_parts.is_empty() {
+            let lower_prompt = scene_prompt.to_lowercase();
+            let new_parts: Vec<String> = enhancement_parts
+                .into_iter()
+                .filter(|p| !lower_prompt.contains(&p.to_lowercase()))
+                .collect();
+            if !new_parts.is_empty() {
+                format!("{}, {}", scene_prompt, new_parts.join(", "))
+            } else {
+                scene_prompt
+            }
+        } else {
+            scene_prompt
+        }
+    } else {
+        scene_prompt
+    };
+
+    let pose_prefix = if pose_emphasis.is_empty() {
+        String::new()
+    } else {
+        format!("{}, ", pose_emphasis)
+    };
+
+    let positive = format!(
+        "(masterpiece, best quality, highly detailed, cinematic composition), (medium shot, waist up, head and torso visible:1.2), {}{}, {}, {}, (detailed face, clear face:1.1)",
+        pose_prefix,
+        subject_count_tag,
+        scene_prompt,
+        char_segments.join(", ")
+    );
+
+    let sfw_negative = if content_rating == "sfw" {
+        ", nsfw, nude, naked, nudity, bare chest, cleavage, lingerie, underwear, \
+         suggestive, seductive, sexual, explicit, provocative, revealing clothing, \
+         bikini, swimsuit, exposed skin, nipples, breasts"
+    } else {
+        ""
+    };
+
+    let negative = format!(
+        "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), decapitated, \
+         (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+         close-up, closeup, head shot, headshot, cropped, zoomed in, \
+         cowboy hat, cowboy, western clothing{}",
+        sfw_negative
+    );
+
+    let _ = app_data; // used implicitly above
+    let _ = character_poses; // accepted for API symmetry, not used in preview
+    Ok(ScenePromptPreview { positive, negative })
 }
 
 /// Scans the scene prompt for action/pose keywords and returns an emphasized

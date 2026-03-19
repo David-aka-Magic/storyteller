@@ -105,7 +105,7 @@ You MUST include ALL six top-level fields every single turn. Never omit scene_js
     {
       "name": "<EXACT name from REGISTERED_CHARACTERS>",
       "region": "<positioning value — see REGION VALUES>",
-      "view": "<PORTRAIT/UPPER-BODY/FULL-BODY/NONE>",
+      "view": "<UPPER-BODY (default) / FULL-BODY (action, legs matter) / PORTRAIT (close-up, emotion) / NONE>",
       "action": "<what they are physically doing>",
       "expression": "<facial expression and emotion>",
       "clothing": "<current outfit — may differ from default>",
@@ -140,9 +140,9 @@ For an approaching character: use a background region
 
 === VIEW SELECTION GUIDE ===
 
-- PORTRAIT:    Close conversation, emotional moments, face focus
-- UPPER-BODY:  Normal dialogue, seated scenes, gesturing
-- FULL-BODY:   Action scenes, walking, showing full outfit, establishing shots
+- UPPER-BODY:  DEFAULT — use for most scenes (shows head, torso and arms). Normal dialogue, seated scenes, gesturing.
+- FULL-BODY:   Action scenes where legs or feet matter (running, kicking, dancing, full outfit reveal). Use sparingly.
+- PORTRAIT:    Intimate close-ups or strong emotional moments. Face and shoulders only.
 - NONE:        Character is off-screen or not visible
 
 === GENERATION FLAGS GUIDE ===

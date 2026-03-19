@@ -5,9 +5,19 @@ import type { StorySession, StorySummary, ExportFormat, StoryPremise, Compressed
 export async function createStory(
   title: string,
   description: string,
-  initialCharacterIds?: number[]
+  initialCharacterIds?: number[],
+  contentRating?: string
 ): Promise<number> {
-  return invoke('create_story', { title, description, initialCharacterIds: initialCharacterIds ?? null });
+  return invoke('create_story', {
+    title,
+    description,
+    initialCharacterIds: initialCharacterIds ?? null,
+    contentRating: contentRating ?? null,
+  });
+}
+
+export async function updateStoryRating(storyId: number, contentRating: string): Promise<void> {
+  return invoke('update_story_rating', { storyId, contentRating });
 }
 
 export async function loadStory(storyId: number): Promise<StorySession> {
@@ -23,8 +33,8 @@ export async function saveStoryState(
   return invoke('save_story_state', { storyId, compressedHistory, currentLocation, thumbnailPath });
 }
 
-export async function listStories(): Promise<StorySummary[]> {
-  return invoke('list_stories');
+export async function listStories(contentRatingFilter?: string): Promise<StorySummary[]> {
+  return invoke('list_stories', { contentRatingFilter: contentRatingFilter ?? null });
 }
 
 export async function deleteStory(storyId: number): Promise<void> {
@@ -41,6 +51,10 @@ export async function getStoryImages(storyId: number, chatId?: number): Promise<
 
 export async function getStoryForChat(chatId: number): Promise<{ id: number; title: string; description: string } | null> {
   return invoke('get_story_for_chat', { chatId });
+}
+
+export async function freeVram(): Promise<void> {
+  return invoke('free_vram');
 }
 
 // ---- Legacy commands (pre-story-manager) ----

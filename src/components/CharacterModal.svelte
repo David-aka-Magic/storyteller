@@ -20,6 +20,7 @@
 <script lang="ts">
   import { generateMasterPortrait, generateCharacterPortrait, saveMasterPortrait } from '$lib/api/image-gen';
   import { updateCharacter, addCharacter } from '$lib/api/character';
+  import { getConfig } from '$lib/api/config';
   import type { CharacterProfile } from '../lib/types';
   import ImageLightbox from './shared/ImageLightbox.svelte';
 
@@ -69,6 +70,7 @@
     image: undefined,
     seed: undefined,
     art_style: 'Realistic',
+    content_rating: 'sfw',
   });
 
   const heightLabels = ['Very Short', 'Short', 'Average', 'Tall', 'Very Tall'];
@@ -92,8 +94,11 @@
       if (character) {
         form = { ...character };
         if (!form.art_style) form.art_style = 'Realistic';
+        if (!form.content_rating) form.content_rating = 'sfw';
       } else {
         form = getEmptyForm();
+        // Default new characters to the app's current content rating
+        getConfig().then(cfg => { form.content_rating = cfg.content_rating; }).catch(() => {});
         generateSdPrompt();
       }
       // Reset gallery state on open
@@ -436,6 +441,23 @@
           {/each}
         </select>
 
+        <!-- Content Rating toggle -->
+        <div class="rating-row">
+          <label class="style-label">Content Rating</label>
+          <div class="rating-toggle">
+            <button
+              class="rating-btn"
+              class:active={form.content_rating === 'sfw'}
+              onclick={() => form.content_rating = 'sfw'}
+            >SFW</button>
+            <button
+              class="rating-btn nsfw-btn"
+              class:active={form.content_rating === 'nsfw'}
+              onclick={() => form.content_rating = 'nsfw'}
+            >NSFW</button>
+          </div>
+        </div>
+
         <!-- Error banner -->
         {#if generationError}
           <div class="error-msg">{generationError}</div>
@@ -672,6 +694,17 @@
   /* ── Portrait column ── */
   .style-label { font-size: 0.85em; font-weight: bold; color: var(--text-secondary, #666); }
   .style-dropdown { width: 100%; }
+
+  .rating-row { display: flex; flex-direction: column; gap: 4px; }
+  .rating-toggle { display: flex; gap: 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--border-secondary, #ccc); }
+  .rating-btn {
+    flex: 1; padding: 6px 0; border: none; cursor: pointer;
+    font-size: 0.8em; font-weight: 700; letter-spacing: 0.04em;
+    background: var(--bg-secondary, #f0f0f0); color: var(--text-secondary, #888);
+    transition: background 0.15s, color 0.15s;
+  }
+  .rating-btn.active { background: rgba(35, 134, 54, 0.2); color: #3fb950; }
+  .nsfw-btn.active { background: rgba(248, 81, 73, 0.2); color: #f85149; }
 
   .image-preview {
     cursor: pointer;

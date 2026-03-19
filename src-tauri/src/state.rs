@@ -14,6 +14,13 @@ use tauri::{AppHandle, Manager};
 /// The next call to process_story_turn consumes it (one-shot).
 pub struct SceneHintState(pub Mutex<HashMap<i64, String>>);
 
+/// Tracks PIDs of services that StoryEngine started.
+/// Only those PIDs are killed on exit — user-started instances are left alone.
+pub struct ServicePidState {
+    pub ollama_pid: Mutex<Option<u32>>,
+    pub comfyui_pid: Mutex<Option<u32>>,
+}
+
 pub struct OllamaState {
     pub db: SqlitePool,
     pub client: reqwest::Client,
@@ -180,6 +187,8 @@ impl OllamaState {
         sqlx::query("ALTER TABLE characters ADD COLUMN height_scale INTEGER DEFAULT 3")
             .execute(pool).await.ok();
         sqlx::query("ALTER TABLE characters ADD COLUMN weight_scale INTEGER DEFAULT 3")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN content_rating TEXT DEFAULT 'sfw'")
             .execute(pool).await.ok();
 
         // =====================================================================

@@ -65,6 +65,8 @@ pub struct CharacterProfile {
     pub height_scale: Option<i32>,
     #[serde(default = "default_scale")]
     pub weight_scale: Option<i32>,
+    #[serde(default)]
+    pub content_rating: Option<String>,
 }
 
 fn default_scale() -> Option<i32> {

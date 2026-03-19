@@ -7,7 +7,17 @@
 use std::path::PathBuf;
 use super::ServiceManager;
 
-pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
+pub struct StartedServices {
+    pub ollama_pid: Option<u32>,
+    pub comfyui_pid: Option<u32>,
+}
+
+pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) -> StartedServices {
+    let mut started = StartedServices {
+        ollama_pid: None,
+        comfyui_pid: None,
+    };
+
     // Small delay to let app fully initialize
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -16,13 +26,22 @@ pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
         println!("[Startup] Starting Ollama...");
         let ollama_bin = super::setup::find_ollama_binary()
             .unwrap_or_else(|| std::path::PathBuf::from("ollama"));
-        let _ = std::process::Command::new(&ollama_bin)
+        match std::process::Command::new(&ollama_bin)
             .arg("serve")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn();
+            .spawn()
+        {
+            Ok(child) => {
+                let pid = child.id();
+                println!("[Startup] Ollama started with PID {}", pid);
+                started.ollama_pid = Some(pid);
+                std::mem::forget(child);
+            }
+            Err(e) => println!("[Startup] Failed to start Ollama: {}", e),
+        }
     } else {
-        println!("[Startup] Ollama already running");
+        println!("[Startup] Ollama already running — not tracking PID");
     }
 
     // Start SD if not running
@@ -48,7 +67,10 @@ pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
                 .stderr(std::process::Stdio::null())
                 .spawn()
             {
-                Ok(_) => println!("[Startup] SD process started successfully"),
+                Ok(child) => {
+                    println!("[Startup] SD process started (PID {})", child.id());
+                    std::mem::forget(child);
+                }
                 Err(e) => println!("[Startup] Failed to start SD: {}", e),
             }
         } else {
@@ -61,7 +83,10 @@ pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
                     .current_dir(&sd_path)
                     .spawn()
                 {
-                    Ok(_) => println!("[Startup] SD batch file started in new window"),
+                    Ok(child) => {
+                        println!("[Startup] SD batch file started in new window");
+                        std::mem::forget(child);
+                    }
                     Err(e) => println!("[Startup] Failed to start SD batch: {}", e),
                 }
             } else {
@@ -103,17 +128,24 @@ pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) {
                     .spawn()
             } else {
                 println!("[Startup] ComfyUI not found at {:?}", comfyui_path);
-                return;
+                return started;
             };
 
             match result {
-                Ok(_) => println!("[Startup] ComfyUI started"),
+                Ok(child) => {
+                    let pid = child.id();
+                    println!("[Startup] ComfyUI started with PID {}", pid);
+                    started.comfyui_pid = Some(pid);
+                    std::mem::forget(child);
+                }
                 Err(e) => println!("[Startup] Failed to start ComfyUI: {}", e),
             }
         } else {
-            println!("[Startup] ComfyUI already running");
+            println!("[Startup] ComfyUI already running — not tracking PID");
         }
     } else {
         println!("[Startup] ComfyUI path not configured, skipping");
     }
+
+    started
 }

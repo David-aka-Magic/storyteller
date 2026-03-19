@@ -24,7 +24,7 @@
     deleteCharacter as apiDeleteCharacter,
     linkCharacterToStory,
   } from '$lib/api/character';
-  import { listStories, loadStory, createStory, saveStoryPremise, deleteStory as apiDeleteStory } from '$lib/api/story';
+  import { listStories, loadStory, createStory, saveStoryPremise, deleteStory as apiDeleteStory, freeVram } from '$lib/api/story';
   import { getConfig } from '$lib/api/config';
   import { setSceneHint } from '$lib/api/scene';
 
@@ -175,6 +175,9 @@
     selectedStoryId = id;
     showGallery = false;
 
+    // Free GPU memory before loading new story context
+    try { await freeVram(); } catch { /* non-fatal */ }
+
     if (id === '1') {
       // Free Write — use default chat (id 1) and clear the view
       currentChatId = 1;
@@ -268,6 +271,8 @@
         dbMessageId: result.assistant_message_id ?? undefined,
         sceneCharacterNames: result.characters.map(c => c.name),
         sceneCharacterPoses: result.characters.map(c => c.pose),
+        enrichedPrompt: result.enriched_prompt ?? undefined,
+        negativePrompt: result.negative_prompt ?? undefined,
       };
 
       if (result.generated_image_path) {
@@ -337,7 +342,9 @@
 
   async function fetchStoryList() {
     try {
-      const list = await listStories();
+      const cfg = await getConfig();
+      const filter = cfg.content_rating === 'sfw' ? 'sfw' : undefined;
+      const list = await listStories(filter);
       stories = [
         { id: '1', title: 'Free Write', description: 'No constraints.' },
         ...list.map(s => ({ id: String(s.story_id), title: s.title, description: s.description })),
@@ -374,9 +381,11 @@
       const storyId = selectedStoryId && selectedStoryId !== '1'
         ? parseInt(selectedStoryId, 10)
         : null;
+      const cfg = await getConfig();
+      const filter = cfg.content_rating === 'sfw' ? 'sfw' : undefined;
       [characters, allCharacters] = await Promise.all([
-        listCharactersForStory(storyId ?? undefined),
-        listAllCharacters(),
+        listCharactersForStory(storyId ?? undefined, filter),
+        listAllCharacters(filter),
       ]);
     } catch (e) { console.error(e); }
   }
@@ -552,6 +561,7 @@
     <SettingsModal
       show={showSettingsModal}
       onclose={() => showSettingsModal = false}
+      oncontentchange={() => { fetchStoryList(); fetchCharacterList(); }}
     />
   </div>
   {/if}

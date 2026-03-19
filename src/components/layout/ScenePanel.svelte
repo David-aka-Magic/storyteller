@@ -280,7 +280,10 @@
                     {/if}
                     <span class="scene-badge">✓</span>
                   </button>
-                  <span class="char-name">{char.name}</span>
+                  <span class="char-name">
+                    {char.name}
+                    {#if char.content_rating === 'nsfw'}<span class="nsfw-pip" title="NSFW"></span>{/if}
+                  </span>
                 </div>
               {/each}
             </div>
@@ -307,7 +310,10 @@
                       <span class="initials">{initials(char.name)}</span>
                     {/if}
                   </button>
-                  <span class="char-name">{char.name}</span>
+                  <span class="char-name">
+                    {char.name}
+                    {#if char.content_rating === 'nsfw'}<span class="nsfw-pip" title="NSFW"></span>{/if}
+                  </span>
                 </div>
               {/each}
             </div>
@@ -328,7 +334,10 @@
                       <span class="initials">{initials(char.name)}</span>
                     {/if}
                   </div>
-                  <span class="char-name">{char.name}</span>
+                  <span class="char-name">
+                    {char.name}
+                    {#if char.content_rating === 'nsfw'}<span class="nsfw-pip" title="NSFW"></span>{/if}
+                  </span>
                   <div class="char-actions">
                     <button class="icon-btn small" onclick={() => onEditCharacter?.(char)} title="Edit">✏</button>
                   </div>
@@ -656,6 +665,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .nsfw-pip {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-danger, #f85149);
+    vertical-align: middle;
+    margin-left: 3px;
+    flex-shrink: 0;
   }
 
   .char-actions {

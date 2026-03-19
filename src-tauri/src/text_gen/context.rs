@@ -432,16 +432,41 @@ pub struct AssembledContext {
     pub compressed_turn_count: usize,
 }
 
+/// Derive pronouns from the gender field.
+fn pronouns_for_gender(gender: Option<&str>) -> &'static str {
+    match gender.map(|g| g.to_lowercase()).as_deref() {
+        Some("female") | Some("f") | Some("woman") | Some("girl") => "she/her/hers",
+        Some("male") | Some("m") | Some("man") | Some("boy") => "he/him/his",
+        Some("non-binary") | Some("nonbinary") | Some("nb") | Some("enby") => "they/them/theirs",
+        _ => "they/them/theirs",
+    }
+}
+
+/// Build a compact pronoun cheat-sheet for the scene characters.
+fn build_pronoun_reminder(characters: &[CharacterInfo]) -> String {
+    if characters.is_empty() {
+        return String::new();
+    }
+    let entries: Vec<String> = characters.iter().map(|c| {
+        let pronouns = pronouns_for_gender(c.gender.as_deref());
+        format!("{}={}", c.name, pronouns)
+    }).collect();
+    format!(" PRONOUN REMINDER: {}", entries.join(", "))
+}
+
 /// Build a single character entry line.
 fn character_line(c: &CharacterInfo) -> String {
+    let gender_str = c.gender.as_deref().unwrap_or("unknown");
+    let pronouns = pronouns_for_gender(c.gender.as_deref());
     format!(
-        "- Name: {}, Age: {}, Gender: {}, Personality: {}. Appearance: {}. Default clothing: {}\n",
-        c.name,
-        c.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".to_string()),
-        c.gender.as_deref().unwrap_or("unknown"),
-        c.personality.as_deref().unwrap_or("not specified"),
-        c.appearance.as_deref().unwrap_or("not specified"),
-        c.default_clothing.as_deref().unwrap_or("not specified"),
+        "- {name} ({pronouns}): {gender}, age {age}. Personality: {personality}. Appearance: {appearance}. Clothing: {clothing}\n",
+        name = c.name,
+        pronouns = pronouns,
+        gender = gender_str,
+        age = c.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".to_string()),
+        personality = c.personality.as_deref().unwrap_or("not specified"),
+        appearance = c.appearance.as_deref().unwrap_or("not specified"),
+        clothing = c.default_clothing.as_deref().unwrap_or("not specified"),
     )
 }
 
@@ -508,6 +533,7 @@ fn assemble_prompt_string(
     compressed_summary: &str,
     recent_turns: &[StoryTurn],
     current_user_input: &str,
+    scene_characters: &[CharacterInfo],
 ) -> String {
     let mut prompt = String::new();
 
@@ -529,9 +555,11 @@ fn assemble_prompt_string(
         }
     }
 
+    let pronoun_reminder = build_pronoun_reminder(scene_characters);
     prompt.push_str(&format!(
-        "<|im_start|>user\n{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, generation_flags.]<|im_end|><|im_start|>assistant\n",
-        current_user_input
+        "<|im_start|>user\n{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, generation_flags.{}]<|im_end|><|im_start|>assistant\n",
+        current_user_input,
+        pronoun_reminder
     ));
 
     prompt
@@ -596,7 +624,7 @@ pub fn build_compressed_context(
     let mut recent_turns: Vec<StoryTurn> = conversation.turns.clone();
     let compressed_summary = conversation.compressed.story_so_far.clone();
 
-    let mut prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input);
+    let mut prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters);
 
     // --- Step 4: Budget enforcement — trim oldest turns until prompt fits ---
     loop {
@@ -616,7 +644,7 @@ pub fn build_compressed_context(
             "[Context] Budget exceeded ({} tokens > {}), dropping turn {} to fit",
             estimated, max_prompt_tokens, removed.turn_number
         );
-        prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input);
+        prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters);
     }
 
     let estimated_tokens = estimate_tokens(&prompt);
@@ -685,8 +713,14 @@ pub fn build_compressed_chat_messages(
         }
     }
 
-    // Current input
-    messages.push(json!({"role": "user", "content": current_user_input}));
+    // Current input with pronoun reminder appended to the JSON format instruction
+    let pronoun_reminder = build_pronoun_reminder(scene_characters);
+    let final_user_content = format!(
+        "{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, generation_flags.{}]",
+        current_user_input,
+        pronoun_reminder
+    );
+    messages.push(json!({"role": "user", "content": final_user_content}));
 
     (messages, was_compressed)
 }
@@ -951,7 +985,7 @@ mod tests {
         assert_eq!(messages[1]["content"], "Hi");
         assert_eq!(messages[2]["role"], "assistant");
         assert_eq!(messages[3]["role"], "user");
-        assert_eq!(messages[3]["content"], "Go east");
+        assert!(messages[3]["content"].as_str().unwrap_or("").starts_with("Go east"));
     }
 
     #[test]

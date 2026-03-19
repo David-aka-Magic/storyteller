@@ -38,6 +38,7 @@ fn row_to_profile(r: &sqlx::sqlite::SqliteRow) -> CharacterProfile {
         eye_color: r.get("eye_color"),
         height_scale: r.get("height_scale"),
         weight_scale: r.get("weight_scale"),
+        content_rating: r.get("content_rating"),
     }
 }
 
@@ -61,8 +62,8 @@ pub async fn add_character(
             name, age, gender, skin_tone, hair_style, hair_color,
             body_type, personality, additional_notes, default_clothing,
             sd_prompt, image, master_image_path, seed, art_style,
-            eye_color, height_scale, weight_scale
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            eye_color, height_scale, weight_scale, content_rating
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#
     )
     .bind(&character.name)
@@ -83,6 +84,7 @@ pub async fn add_character(
     .bind(&character.eye_color)
     .bind(&character.height_scale)
     .bind(&character.weight_scale)
+    .bind(character.content_rating.clone().unwrap_or_else(|| "sfw".to_string()))
     .execute(&state.db)
     .await
     .map_err(|e| format!("Failed to add character: {}", e))?;
@@ -104,7 +106,7 @@ pub async fn get_character_by_name(
             SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
                    c.hair_color, c.body_type, c.personality, c.additional_notes,
                    c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
-                   c.eye_color, c.height_scale, c.weight_scale
+                   c.eye_color, c.height_scale, c.weight_scale, c.content_rating
             FROM characters c
             INNER JOIN story_characters sc ON sc.character_id = c.id
             WHERE c.name = ? AND sc.story_id = ?
@@ -122,7 +124,7 @@ pub async fn get_character_by_name(
             SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                    hair_color, body_type, personality, additional_notes,
                    default_clothing, sd_prompt, image, master_image_path, seed, art_style,
-                   eye_color, height_scale, weight_scale
+                   eye_color, height_scale, weight_scale, content_rating
             FROM characters
             WHERE name = ?
             LIMIT 1
@@ -148,7 +150,7 @@ pub async fn get_character_by_id(
         SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                hair_color, body_type, personality, additional_notes,
                default_clothing, sd_prompt, image, master_image_path, seed, art_style,
-               eye_color, height_scale, weight_scale
+               eye_color, height_scale, weight_scale, content_rating
         FROM characters
         WHERE id = ?
         "#
@@ -190,6 +192,7 @@ pub async fn update_character(
             eye_color = ?,
             height_scale = ?,
             weight_scale = ?,
+            content_rating = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         "#
@@ -212,6 +215,7 @@ pub async fn update_character(
     .bind(&character.eye_color)
     .bind(&character.height_scale)
     .bind(&character.weight_scale)
+    .bind(character.content_rating.clone().unwrap_or_else(|| "sfw".to_string()))
     .bind(&character.id)
     .execute(&state.db)
     .await
@@ -246,66 +250,70 @@ pub async fn delete_character(
 
 /// List characters linked to a specific story via the junction table.
 /// If story_id is None, returns ALL characters in the database.
+/// If content_rating_filter is Some("sfw"), only SFW characters are returned.
 #[tauri::command]
 pub async fn list_characters_for_story(
     story_id: Option<i64>,
+    content_rating_filter: Option<String>,
     state: State<'_, OllamaState>,
 ) -> Result<Vec<CharacterProfile>, String> {
-    let rows = if let Some(sid) = story_id {
-        sqlx::query(
-            r#"
-            SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
-                   c.hair_color, c.body_type, c.personality, c.additional_notes,
-                   c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
-                   c.eye_color, c.height_scale, c.weight_scale
-            FROM characters c
-            INNER JOIN story_characters sc ON sc.character_id = c.id
-            WHERE sc.story_id = ?
-            ORDER BY c.name ASC
-            "#
-        )
-        .bind(sid)
+    use sqlx::QueryBuilder;
+    use sqlx::Sqlite;
+
+    let only_sfw = content_rating_filter.as_deref() == Some("sfw");
+
+    let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style, \
+         c.hair_color, c.body_type, c.personality, c.additional_notes, \
+         c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style, \
+         c.eye_color, c.height_scale, c.weight_scale, c.content_rating \
+         FROM characters c"
+    );
+
+    if let Some(sid) = story_id {
+        builder.push(" INNER JOIN story_characters sc ON sc.character_id = c.id WHERE sc.story_id = ");
+        builder.push_bind(sid);
+        if only_sfw {
+            builder.push(" AND c.content_rating = 'sfw'");
+        }
+    } else if only_sfw {
+        builder.push(" WHERE c.content_rating = 'sfw'");
+    }
+
+    builder.push(" ORDER BY c.name ASC");
+
+    let rows = builder.build()
         .fetch_all(&state.db)
         .await
-        .map_err(|e| e.to_string())?
-    } else {
-        sqlx::query(
-            r#"
-            SELECT id, story_id, name, age, gender, skin_tone, hair_style,
-                   hair_color, body_type, personality, additional_notes,
-                   default_clothing, sd_prompt, image, master_image_path, seed, art_style,
-                   eye_color, height_scale, weight_scale
-            FROM characters
-            ORDER BY name ASC
-            "#
-        )
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| e.to_string())?
-    };
+        .map_err(|e| e.to_string())?;
 
     Ok(rows.iter().map(row_to_profile).collect())
 }
 
 /// List ALL characters in the database (not filtered by story).
+/// If content_rating_filter is Some("sfw"), only SFW characters are returned.
 /// Used by the "Add Existing Character" picker.
 #[tauri::command]
 pub async fn list_all_characters(
+    content_rating_filter: Option<String>,
     state: State<'_, OllamaState>,
 ) -> Result<Vec<CharacterProfile>, String> {
-    let rows = sqlx::query(
-        r#"
-        SELECT id, story_id, name, age, gender, skin_tone, hair_style,
-               hair_color, body_type, personality, additional_notes,
-               default_clothing, sd_prompt, image, master_image_path, seed, art_style,
-               eye_color, height_scale, weight_scale
-        FROM characters
-        ORDER BY name ASC
-        "#
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let rating_clause = match content_rating_filter.as_deref() {
+        Some("sfw") => " WHERE content_rating = 'sfw'",
+        _ => "",
+    };
+    let sql = format!(
+        "SELECT id, story_id, name, age, gender, skin_tone, hair_style, \
+         hair_color, body_type, personality, additional_notes, \
+         default_clothing, sd_prompt, image, master_image_path, seed, art_style, \
+         eye_color, height_scale, weight_scale, content_rating \
+         FROM characters{} ORDER BY name ASC",
+        rating_clause
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(rows.iter().map(row_to_profile).collect())
 }
@@ -477,7 +485,7 @@ pub async fn list_characters_by_art_style(
         "SELECT id, story_id, name, age, gender, skin_tone, hair_style, \
          hair_color, body_type, personality, additional_notes, \
          default_clothing, sd_prompt, image, master_image_path, seed, art_style, \
-         eye_color, height_scale, weight_scale \
+         eye_color, height_scale, weight_scale, content_rating \
          FROM characters WHERE 1=1"
     );
 
@@ -523,7 +531,7 @@ pub async fn search_characters(
             SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style,
                    c.hair_color, c.body_type, c.personality, c.additional_notes,
                    c.default_clothing, c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
-                   c.eye_color, c.height_scale, c.weight_scale
+                   c.eye_color, c.height_scale, c.weight_scale, c.content_rating
             FROM characters c
             INNER JOIN story_characters sc ON sc.character_id = c.id
             WHERE c.name LIKE ? AND sc.story_id = ?
@@ -543,7 +551,7 @@ pub async fn search_characters(
             SELECT id, story_id, name, age, gender, skin_tone, hair_style,
                    hair_color, body_type, personality, additional_notes,
                    default_clothing, sd_prompt, image, master_image_path, seed, art_style,
-                   eye_color, height_scale, weight_scale
+                   eye_color, height_scale, weight_scale, content_rating
             FROM characters
             WHERE name LIKE ?
             ORDER BY name ASC

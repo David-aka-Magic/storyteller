@@ -38,7 +38,7 @@
     type SceneJson,
     type CharacterProfile,
   } from '$lib/types';
-  import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
+  import { processStoryTurn, generateSceneImageForTurn, previewScenePrompt, illustrateSceneCustom } from '$lib/api/text-gen';
   import { saveImageForMessage } from '$lib/api/chat';
   import { clearImageCache } from '$lib/utils/image-url';
 
@@ -81,6 +81,12 @@
     messageId: number | null;
     /** If the scene location changed from the previous turn, show a banner. */
     sceneTransition: { location: string; timeOfDay?: string; mood?: string } | null;
+    /** Raw scene prompt string used to preview enriched SDXL prompts. */
+    scenePrompt: string;
+    /** Enriched positive SDXL prompt (loaded lazily on expand). */
+    enrichedPrompt: string | null;
+    /** Enriched negative SDXL prompt (loaded lazily on expand). */
+    negativePrompt: string | null;
   }
 
   /** Pending scene-swap suggestion shown above the input (user-initiated). */
@@ -99,6 +105,9 @@
 
   /** turnNumber of the turn currently having an image generated (null = none) */
   let generatingImageForTurn: number | null = null;
+
+  /** turnNumber of the turn currently loading its prompt preview (null = none) */
+  let loadingPromptForTurn: number | null = null;
 
   // Scroll
   let scrollContainer: HTMLDivElement;
@@ -152,6 +161,9 @@
             imageError: null,
             messageId: rt.message_id ?? null,
             sceneTransition: null,
+            scenePrompt: typeof storyText === 'string' ? storyText : 'Story data loaded.',
+            enrichedPrompt: null,
+            negativePrompt: null,
           };
         });
       }
@@ -215,6 +227,7 @@
           : null;
 
       // Build the display turn
+      const builtScenePrompt = buildScenePrompt(result.scene, result.story_text);
       const displayTurn: DisplayTurn = {
         turnNumber: result.turn_id || pendingTurnNumber,
         userAction: userInput,
@@ -227,6 +240,9 @@
         imageError: result.image_generation_error,
         messageId: result.assistant_message_id ?? null,
         sceneTransition,
+        scenePrompt: builtScenePrompt,
+        enrichedPrompt: result.enriched_prompt ?? null,
+        negativePrompt: result.negative_prompt ?? null,
       };
 
       turns = [...turns, displayTurn];
@@ -299,32 +315,74 @@
     return parts.length > 0 ? parts.join(', ') : fallback;
   }
 
-  async function handleIllustrate(data: { storyText: string; messageId: number | null; turnNumber: number }) {
-    const { storyText, messageId, turnNumber } = data;
+  async function handleExpandPrompt(turnNumber: number) {
+    const turn = turns.find(t => t.turnNumber === turnNumber);
+    if (!turn || turn.enrichedPrompt !== null) return; // already loaded
+
+    loadingPromptForTurn = turnNumber;
+    try {
+      const preview = await previewScenePrompt(
+        turn.scenePrompt,
+        storyId ?? undefined,
+        turn.characters.map(c => c.name),
+        turn.characters.map(c => c.view ?? 'UPPER-BODY'),
+      );
+      turns = turns.map(t =>
+        t.turnNumber === turnNumber
+          ? { ...t, enrichedPrompt: preview.positive, negativePrompt: preview.negative }
+          : t
+      );
+    } catch (e) {
+      console.warn('[StoryView] Failed to load prompt preview:', e);
+    } finally {
+      loadingPromptForTurn = null;
+    }
+  }
+
+  async function handleIllustrate(data: { storyText: string; messageId: number | null; turnNumber: number; positivePrompt?: string; negativePrompt?: string }) {
+    const { storyText, messageId, turnNumber, positivePrompt, negativePrompt } = data;
     if (generatingImageForTurn !== null) return; // already generating
 
     generatingImageForTurn = turnNumber;
     lastError = null;
 
     try {
-      // Build a concise visual prompt from scene data rather than passing the full narrative
       const turn = turns.find(t => t.turnNumber === turnNumber);
       // Clear stale cache entry so the new image isn't served from cache
       if (turn?.imagePath) clearImageCache(turn.imagePath);
-      const scenePrompt = buildScenePrompt(turn?.scene ?? null, storyText);
-      const imagePath = await generateSceneImageForTurn(scenePrompt, storyId ?? undefined);
+
+      let imagePath: string;
+
+      if (positivePrompt && messageId !== null && storyId !== null && chatId !== null) {
+        // User provided edited prompts — backend saves to DB itself
+        imagePath = await illustrateSceneCustom(
+          storyId,
+          chatId,
+          messageId,
+          positivePrompt,
+          negativePrompt ?? '',
+        );
+      } else {
+        // No edits — use the standard enrichment pipeline
+        const scenePrompt = turn?.scenePrompt ?? buildScenePrompt(turn?.scene ?? null, storyText);
+        imagePath = await generateSceneImageForTurn(
+          scenePrompt,
+          storyId ?? undefined,
+          turn?.characters.map(c => c.name),
+          turn?.characters.map(c => c.view ?? 'UPPER-BODY'),
+        );
+        // Persist to DB separately
+        if (messageId !== null && chatId !== null) {
+          await saveImageForMessage(messageId, chatId, imagePath).catch(e =>
+            console.warn('[StoryView] Failed to persist image to DB:', e)
+          );
+        }
+      }
 
       // Update the turn in the array with the new image path
       turns = turns.map(t =>
         t.turnNumber === turnNumber ? { ...t, imagePath, imageError: null } : t
       );
-
-      // Persist to DB if we have the message_id
-      if (messageId !== null && chatId !== null) {
-        await saveImageForMessage(messageId, chatId, imagePath).catch(e =>
-          console.warn('[StoryView] Failed to persist image to DB:', e)
-        );
-      }
 
       // Update story thumbnail with the latest generated image
       updateThumbnail(imagePath);
@@ -429,8 +487,13 @@
             messageId={turn.messageId}
             isGeneratingImage={generatingImageForTurn === turn.turnNumber}
             sceneTransition={turn.sceneTransition}
+            scenePrompt={turn.scenePrompt}
+            enrichedPrompt={turn.enrichedPrompt}
+            negativePrompt={turn.negativePrompt}
+            isLoadingPrompt={loadingPromptForTurn === turn.turnNumber}
             oncharacterclick={handleCharacterClick}
             onillustratescene={handleIllustrate}
+            onexpandprompt={handleExpandPrompt}
           />
         {/each}
       </div>

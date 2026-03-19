@@ -20,6 +20,7 @@
   import StoryCard from './StoryCard.svelte';
   import NewStoryModal from './NewStoryModal.svelte';
   import type { StorySummary, CharacterProfile } from '$lib/types';
+  import { getConfig } from '$lib/api/config';
 
   import {
     stories,
@@ -32,7 +33,7 @@
   export let availableCharacters: CharacterProfile[] = [];
 
   export let onloadstory: ((storyId: number) => void) | undefined = undefined;
-  export let onnewstory: ((data: { title: string; description: string; characterIds: number[] }) => void) | undefined = undefined;
+  export let onnewstory: ((data: { title: string; description: string; characterIds: number[]; contentRating: string }) => void) | undefined = undefined;
   export let onopenesettings: (() => void) | undefined = undefined;
 
   // ── Local State ──
@@ -42,8 +43,10 @@
   let isDeleting = false;
 
   // ── Lifecycle ──
-  onMount(() => {
-    refreshStoryList();
+  onMount(async () => {
+    const cfg = await getConfig().catch(() => null);
+    const filter = cfg?.content_rating === 'sfw' ? 'sfw' : undefined;
+    refreshStoryList(filter);
   });
 
   // ── Handlers ──
@@ -69,7 +72,7 @@
     deleteConfirmId = null;
   }
 
-  function handleCreate(data: { title: string; description: string; characterIds: number[] }) {
+  function handleCreate(data: { title: string; description: string; characterIds: number[]; contentRating: string }) {
     showNewStoryModal = false;
     onnewstory?.(data);
   }
@@ -110,7 +113,7 @@
     {#if $lastError}
       <div class="error-banner">
         <span>⚠ {$lastError}</span>
-        <button class="retry-btn" on:click={() => refreshStoryList()}>Retry</button>
+        <button class="retry-btn" on:click={async () => { const cfg = await getConfig().catch(() => null); refreshStoryList(cfg?.content_rating === 'sfw' ? 'sfw' : undefined); }}>Retry</button>
       </div>
     {/if}
 
