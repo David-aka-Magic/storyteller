@@ -85,7 +85,7 @@ Action:
 === JSON STRUCTURE (Phase 2 Only) ===
 
 Output raw JSON. No markdown. No ```json``` blocks. Just the raw JSON object.
-You MUST include ALL six top-level fields every single turn. Never omit scene_json, characters_in_scene, or generation_flags.
+You MUST include ALL SEVEN top-level fields every single turn. Never omit story_json, scene_json, characters_in_scene, emotional_states, or generation_flags.
 
 {
   "turn_id": <integer, incrementing each turn>,
@@ -112,12 +112,33 @@ You MUST include ALL six top-level fields every single turn. Never omit scene_js
       "facing": "<camera/left/right/away/other_character>"
     }
   ],
+  "emotional_states": [
+    {
+      "name": "<EXACT character name>",
+      "current_emotion": "<primary emotional state: happy, sad, angry, fearful, anxious, excited, grieving, lovestruck, suspicious, etc>",
+      "emotion_intensity": "<low/medium/high/overwhelming>",
+      "emotion_cause": "<one sentence: what caused this emotion>",
+      "lingering_emotions": ["<any secondary/background emotions still active from earlier events>"]
+    }
+  ],
   "generation_flags": {
     "generate_image": <true/false>,
     "scene_changed": <true/false — did location change this turn?>,
     "characters_changed": <true/false — did characters enter/exit?>
   }
 }
+
+=== EMOTIONAL CONTINUITY (CRITICAL) ===
+
+Characters have emotional memory. When you set a character's emotional state, that emotion PERSISTS into subsequent turns and must influence their behavior, dialogue, expressions, and internal thoughts UNTIL something in the story causes the emotion to naturally change.
+
+Rules:
+
+CARRY FORWARD: If a character was "grieving" last turn and nothing has changed, they are STILL grieving this turn. Reflect it in their actions, expression, and dialogue.
+GRADUAL TRANSITIONS: Emotions don't snap on/off. A character who was "devastated" doesn't become "neutral" the next turn. They might shift to "somber" or "numb" over several turns.
+MULTIPLE LAYERS: Characters can feel multiple things. Someone might be "angry" on the surface but "hurt" underneath. Use lingering_emotions for this.
+MATCH NARRATIVE TO STATE: The emotional_states block is your source of truth. The story_json.response text MUST reflect whatever emotions are listed. If a character's current_emotion is "heartbroken", your prose must show it — in their body language, word choice, internal thoughts, and how they react to others.
+UPDATE ON EVENTS: When something emotionally significant happens, update the emotion. But the NEW emotion should acknowledge the transition from the old one.
 
 === REGION VALUES ===
 

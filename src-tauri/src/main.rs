@@ -193,6 +193,7 @@ fn main() {
             text_gen::orchestrator::generate_scene_image_for_turn,
             text_gen::orchestrator::get_compression_diagnostics,
             text_gen::orchestrator::regenerate_story,
+            text_gen::orchestrator::regenerate_story_with_input,
             text_gen::orchestrator::free_vram,
             text_gen::orchestrator::preview_scene_prompt,
             text_gen::orchestrator::illustrate_scene_custom,

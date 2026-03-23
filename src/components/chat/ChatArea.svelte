@@ -3,7 +3,7 @@
   import { tick } from 'svelte';
   import ChatInput from './ChatInput.svelte';
   import MessageBubble from './MessageBubble.svelte';
-  import { regenerateStory, generateSceneImageForTurn } from '$lib/api/text-gen';
+  import { regenerateStory, regenerateStoryWithInput, generateSceneImageForTurn } from '$lib/api/text-gen';
   import { readFileBase64 } from '$lib/api/image-gen';
   import type { ChatMessage, StoryTurnResult } from '$lib/types';
 
@@ -111,6 +111,36 @@
     }
   }
 
+  const lastUserInput = $derived(
+    [...messages].reverse().find(m => m.sender === 'user')?.text ?? ''
+  );
+
+  async function regenerateWithInput(editedInput: string) {
+    if (isLoading || isRegenerating) return;
+    isRegenerating = true;
+    try {
+      const result: StoryTurnResult = await regenerateStoryWithInput(currentChatId, editedInput, storyId ?? undefined);
+      const sdPrompt = result.scene
+        ? [result.scene.location, result.scene.lighting, result.scene.mood]
+            .filter(Boolean).join(', ')
+        : undefined;
+      const newAiMsg: ChatMessage = {
+        id: Date.now(),
+        text: '',
+        sender: 'ai',
+        data: { story: result.story_text, sd_prompt: sdPrompt },
+        sceneCharacterNames: result.characters.map(c => c.name),
+        dbMessageId: result.assistant_message_id ?? undefined,
+      };
+      onregenerated?.(newAiMsg);
+    } catch (e) {
+      console.error('Regenerate with input failed:', e);
+      onregenerated?.({ id: Date.now(), text: `Error regenerating: ${e}`, sender: 'ai' });
+    } finally {
+      isRegenerating = false;
+    }
+  }
+
   const isbusy = $derived(isLoading || isRegenerating);
 </script>
 
@@ -127,6 +157,8 @@
             imageError={imageErrors.get(msg.id)}
             onGenerateImage={(pos, neg) => generateImage(msg, pos, neg)}
             onRegenerate={regenerateText}
+            onRewriteWithInput={regenerateWithInput}
+            lastUserInput={lastUserInput}
           />
         {/each}
 

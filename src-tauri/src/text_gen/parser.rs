@@ -293,6 +293,20 @@ impl SceneCharacterTyped {
     }
 }
 
+/// Emotional state of a character at the end of this turn.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CharacterEmotionalState {
+    pub name: String,
+    #[serde(default)]
+    pub current_emotion: String,
+    #[serde(default)]
+    pub emotion_intensity: String,
+    #[serde(default)]
+    pub emotion_cause: String,
+    #[serde(default)]
+    pub lingering_emotions: Vec<String>,
+}
+
 /// Flags that tell us whether to generate a new image for this turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationFlags {
@@ -325,6 +339,8 @@ pub struct LlmTurnOutput {
     pub scene_json: Option<SceneJson>,
     #[serde(default)]
     pub characters_in_scene: Vec<SceneCharacterRaw>,
+    #[serde(default)]
+    pub emotional_states: Vec<CharacterEmotionalState>,
     #[serde(default)]
     pub generation_flags: Option<GenerationFlags>,
 }
@@ -410,6 +426,10 @@ impl ParsedTurn {
 
     pub fn characters_changed(&self) -> bool {
         self.flags().characters_changed
+    }
+
+    pub fn emotional_states(&self) -> &[CharacterEmotionalState] {
+        &self.turn.emotional_states
     }
 
     pub fn scene(&self) -> Option<&SceneJson> {
@@ -599,6 +619,7 @@ pub fn parse_llm_output(raw: &str) -> ParsedTurn {
                     story_json: Some(story),
                     scene_json: None,
                     characters_in_scene: vec![],
+                    emotional_states: vec![],
                     generation_flags: None,
                 };
                 return ParsedTurn {
@@ -623,6 +644,7 @@ pub fn parse_llm_output(raw: &str) -> ParsedTurn {
         }),
         scene_json: None,
         characters_in_scene: vec![],
+        emotional_states: vec![],
         generation_flags: None,
     };
 
@@ -639,6 +661,7 @@ fn empty_turn() -> LlmTurnOutput {
         story_json: None,
         scene_json: None,
         characters_in_scene: vec![],
+        emotional_states: vec![],
         generation_flags: None,
     }
 }

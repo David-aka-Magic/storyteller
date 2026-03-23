@@ -398,6 +398,15 @@ export interface OrchestratorCompressionInfo {
   compressed_summary_preview: string;
 }
 
+/** Emotional state of a character at the end of a story turn. */
+export interface CharacterEmotionalState {
+  name: string;
+  current_emotion: string;
+  emotion_intensity: string;
+  emotion_cause: string;
+  lingering_emotions: string[];
+}
+
 /** Complete result of a single story turn from the orchestrator. */
 export interface StoryTurnResult {
   /** Turn sequence number from the LLM. */
@@ -430,6 +439,8 @@ export interface StoryTurnResult {
   enriched_prompt: string | null;
   /** Full negative SDXL prompt built for this turn. */
   negative_prompt: string | null;
+  /** Emotional states for each character at the end of this turn. */
+  emotional_states: CharacterEmotionalState[];
 }
 
 // ---- Helpers ----

@@ -179,6 +179,61 @@ fn extract_story_text(raw: &str) -> String {
     raw.trim().to_string()
 }
 
+/// Extract the emotional_states array from a raw LLM response and format it
+/// as a multi-line string suitable for injection into the next prompt.
+/// Returns an empty string if no states are found or parseable.
+fn extract_emotional_states(raw: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(raw) {
+        if let Some(states) = v.get("emotional_states").and_then(|s| s.as_array()) {
+            let mut lines = Vec::new();
+            for state in states {
+                let name = state.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let emotion = state.get("current_emotion").and_then(|e| e.as_str()).unwrap_or("");
+                let intensity = state.get("emotion_intensity").and_then(|i| i.as_str()).unwrap_or("medium");
+                let cause = state.get("emotion_cause").and_then(|c| c.as_str()).unwrap_or("");
+                let lingering = state.get("lingering_emotions")
+                    .and_then(|l| l.as_array())
+                    .map(|arr| arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default();
+
+                if !name.is_empty() && !emotion.is_empty() {
+                    let mut line = format!("- {}: {} ({}) — {}", name, emotion, intensity, cause);
+                    if !lingering.is_empty() {
+                        line.push_str(&format!(" [also feeling: {}]", lingering));
+                    }
+                    lines.push(line);
+                }
+            }
+            if !lines.is_empty() {
+                return lines.join("\n");
+            }
+        }
+    }
+    String::new()
+}
+
+/// Extract a compact one-line emotion summary like "Elena: grieving, Marcus: worried"
+/// from a raw LLM response. Used for annotating compressed turn summaries.
+fn extract_brief_emotions(raw: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(raw) {
+        if let Some(states) = v.get("emotional_states").and_then(|s| s.as_array()) {
+            let parts: Vec<String> = states.iter().filter_map(|state| {
+                let name = state.get("name").and_then(|n| n.as_str())?;
+                let emotion = state.get("current_emotion").and_then(|e| e.as_str())?;
+                if name.is_empty() || emotion.is_empty() { return None; }
+                Some(format!("{}: {}", name, emotion))
+            }).collect();
+            if !parts.is_empty() {
+                return parts.join(", ");
+            }
+        }
+    }
+    String::new()
+}
+
 // ============================================================================
 // 3. COMPRESSED HISTORY — the "story so far" block
 // ============================================================================
@@ -297,16 +352,23 @@ impl ConversationContext {
             story_lines.push(self.compressed.story_so_far.clone());
         }
 
-        // Add each turn's summary_hint
+        // Add each turn's summary_hint with brief emotional state annotation
         for turn in turns_to_compress {
+            let emotions = extract_brief_emotions(&turn.assistant_response);
+            let emotion_suffix = if emotions.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", emotions)
+            };
+
             if !turn.summary_hint.is_empty() {
-                story_lines.push(format!("Turn {}: {}", turn.turn_number, turn.summary_hint));
+                story_lines.push(format!("Turn {}: {}{}", turn.turn_number, turn.summary_hint, emotion_suffix));
             } else {
                 // Fallback: use a truncated version of the story text
                 let story_text = extract_story_text(&turn.assistant_response);
                 let truncated: String = story_text.chars().take(100).collect();
                 let suffix = if story_text.len() > 100 { "..." } else { "" };
-                story_lines.push(format!("Turn {}: {}{}", turn.turn_number, truncated, suffix));
+                story_lines.push(format!("Turn {}: {}{}{}", turn.turn_number, truncated, suffix, emotion_suffix));
             }
         }
 
@@ -365,7 +427,7 @@ impl ConversationContext {
 
         Some(format!(
             r#"Summarize the following story events into a concise paragraph (3-5 sentences).
-Preserve: character names, key plot points, current location, and any unresolved conflicts.
+Preserve: character names, key plot points, current location, unresolved conflicts, and each character's current emotional state (what they're feeling and why).
 Do NOT add new story content. Only summarize what happened.
 
 {}
@@ -555,9 +617,23 @@ fn assemble_prompt_string(
         }
     }
 
+    // Inject emotional states from the last assistant response (if any)
+    let emotional_context = recent_turns.last()
+        .map(|t| extract_emotional_states(&t.assistant_response))
+        .unwrap_or_default();
+    let emotional_block = if emotional_context.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "=== CURRENT EMOTIONAL STATES ===\nThese are the characters' current emotional states from the previous turn.\nYour narrative MUST reflect these emotions. Do NOT reset them unless the story gives a clear reason.\n{}\n=== END EMOTIONAL STATES ===\n\n",
+            emotional_context
+        )
+    };
+
     let pronoun_reminder = build_pronoun_reminder(scene_characters);
     prompt.push_str(&format!(
-        "<|im_start|>user\n{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, generation_flags.{}]<|im_end|><|im_start|>assistant\n",
+        "<|im_start|>user\n{}{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, emotional_states, generation_flags.{}]<|im_end|><|im_start|>assistant\n",
+        emotional_block,
         current_user_input,
         pronoun_reminder
     ));
@@ -713,10 +789,24 @@ pub fn build_compressed_chat_messages(
         }
     }
 
+    // Inject emotional states from the last assistant response (if any)
+    let emotional_context = conversation.turns.last()
+        .map(|t| extract_emotional_states(&t.assistant_response))
+        .unwrap_or_default();
+    let emotional_block = if emotional_context.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "=== CURRENT EMOTIONAL STATES ===\nThese are the characters' current emotional states from the previous turn.\nYour narrative MUST reflect these emotions. Do NOT reset them unless the story gives a clear reason.\n{}\n=== END EMOTIONAL STATES ===\n\n",
+            emotional_context
+        )
+    };
+
     // Current input with pronoun reminder appended to the JSON format instruction
     let pronoun_reminder = build_pronoun_reminder(scene_characters);
     let final_user_content = format!(
-        "{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, generation_flags.{}]",
+        "{}{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, emotional_states, generation_flags.{}]",
+        emotional_block,
         current_user_input,
         pronoun_reminder
     );

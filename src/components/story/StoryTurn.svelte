@@ -8,7 +8,7 @@
     - Parse warnings (if any)
 -->
 <script lang="ts">
-  import type { CharacterInScene, SceneJson } from '$lib/types';
+  import type { CharacterEmotionalState, CharacterInScene, SceneJson } from '$lib/types';
   import { filePathToDataUrl } from '$lib/utils/image-url';
   import ImageLightbox from '../shared/ImageLightbox.svelte';
 
@@ -36,10 +36,14 @@
   /** True while the parent is fetching the preview prompts. */
   export let isLoadingPrompt: boolean = false;
 
+  export let emotionalStates: CharacterEmotionalState[] = [];
+
   export let oncharacterclick: ((char: CharacterInScene) => void) | undefined = undefined;
   export let onillustratescene: ((data: { storyText: string; messageId: number | null; turnNumber: number; positivePrompt?: string; negativePrompt?: string }) => void) | undefined = undefined;
   /** Fired when the user expands the prompt editor — parent should fetch enrichedPrompt/negativePrompt. */
   export let onexpandprompt: ((turnNumber: number) => void) | undefined = undefined;
+  export let onrewrite: ((data: { turnNumber: number; editedInput: string }) => void) | undefined = undefined;
+  export let onregenerate: ((turnNumber: number) => void) | undefined = undefined;
   /** If set, shows a scene-change marker above this turn. */
   export let sceneTransition: { location: string; timeOfDay?: string; mood?: string } | null = null;
 
@@ -88,8 +92,12 @@
     }
   }
 
-  // ── Expandable prompt editor state ──
-  let promptExpanded = false;
+  // ── Rewrite editor state ──
+  let rewriteExpanded = false;
+  let editedUserInput = '';
+
+  // ── Illustrate editor state ──
+  let illustrateExpanded = false;
   let editedPositive = '';
   let editedNegative = '';
   let promptDirty = false;
@@ -104,13 +112,6 @@
     editedPositive !== (enrichedPrompt ?? scenePrompt) ||
     editedNegative !== (negativePrompt ?? '')
   );
-
-  function togglePromptExpanded() {
-    promptExpanded = !promptExpanded;
-    if (promptExpanded && enrichedPrompt === null && !isLoadingPrompt) {
-      onexpandprompt?.(turnNumber);
-    }
-  }
 
   function resetPrompts() {
     editedPositive = enrichedPrompt ?? scenePrompt;
@@ -242,76 +243,90 @@
       {/each}
     </div>
 
-    <!-- Visual Prompt Bar + Illustrate Button -->
-    <div class="prompt-bar">
-      <!-- Collapsed header row: toggle arrow + short preview -->
-      <div class="prompt-header">
-        <button class="prompt-toggle" on:click={togglePromptExpanded} title={promptExpanded ? 'Collapse prompt editor' : 'Expand to edit prompt'}>
-          <span class="toggle-arrow" class:expanded={promptExpanded}>▶</span>
-          <span class="prompt-label">Visual Prompt</span>
-          {#if !promptExpanded}
-            <span class="prompt-preview">{scenePrompt || '(no scene data)'}</span>
-          {/if}
-        </button>
-
-        <!-- Action buttons always visible -->
-        {#if isGeneratingImage}
-          <span class="img-generating">
-            <span class="img-gen-pulse"></span>
-            Painting...
+    <!-- Emotional State Indicators -->
+    {#if emotionalStates && emotionalStates.length > 0}
+      <div class="emotional-states">
+        {#each emotionalStates as es}
+          <span class="emotional-state-entry">
+            {es.name}: <em>{es.current_emotion}</em>{es.emotion_intensity === 'high' || es.emotion_intensity === 'overwhelming' ? ' ⚡' : ''}
           </span>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Illustrate / Inline Prompt Editor -->
+    {#if illustrateExpanded}
+      <div class="illustrate-editor">
+        <label class="illustrate-label">Edit visual prompt before generating:</label>
+        {#if isLoadingPrompt}
+          <div class="prompt-loading">
+            <span class="img-gen-pulse"></span>
+            <span>Building prompt...</span>
+          </div>
         {:else}
-          <button
-            class="illustrate-btn"
-            class:edited={isEdited}
-            on:click={handleIllustrate}
-            title={imagePath ? 'Generate a new image for this scene' : 'Generate an image for this scene'}
-          >
-            {#if imagePath}↺ Redraw{:else}🎨 Illustrate{/if}{#if isEdited}<span class="edited-badge">edited</span>{/if}
-          </button>
+          <div class="prompt-field">
+            <div class="field-header">
+              <span class="field-label">Positive</span>
+              {#if isEdited}
+                <button class="reset-btn" on:click={resetPrompts} title="Reset to auto-generated">↺ Reset</button>
+              {/if}
+            </div>
+            <textarea
+              class="prompt-textarea"
+              bind:value={editedPositive}
+              on:input={() => { promptDirty = true; }}
+              rows="4"
+              placeholder="Quality tags, scene, character descriptions..."
+            ></textarea>
+          </div>
+          <div class="prompt-field">
+            <div class="field-header">
+              <span class="field-label">Negative</span>
+            </div>
+            <textarea
+              class="prompt-textarea negative"
+              bind:value={editedNegative}
+              on:input={() => { promptDirty = true; }}
+              rows="2"
+              placeholder="Things to avoid..."
+            ></textarea>
+          </div>
+          <div class="illustrate-actions">
+            <button
+              class="action-btn illustrate-confirm"
+              on:click={() => { handleIllustrate(); illustrateExpanded = false; }}
+              disabled={isGeneratingImage}
+            >
+              {#if imagePath}↺ Redraw Image{:else}🎨 Generate Image{/if}{#if isEdited}<span class="edited-badge">edited</span>{/if}
+            </button>
+            <button
+              class="action-btn illustrate-cancel"
+              on:click={() => { illustrateExpanded = false; }}
+            >
+              Cancel
+            </button>
+          </div>
         {/if}
       </div>
-
-      <!-- Expanded prompt editor -->
-      {#if promptExpanded}
-        <div class="prompt-editor">
-          {#if isLoadingPrompt}
-            <div class="prompt-loading">
-              <span class="img-gen-pulse"></span>
-              <span>Building prompt...</span>
-            </div>
-          {:else}
-            <div class="prompt-field">
-              <div class="field-header">
-                <span class="field-label">Positive</span>
-                {#if isEdited}
-                  <button class="reset-btn" on:click={resetPrompts} title="Reset to auto-generated">↺ Reset</button>
-                {/if}
-              </div>
-              <textarea
-                class="prompt-textarea"
-                bind:value={editedPositive}
-                on:input={() => { promptDirty = true; }}
-                rows="4"
-                placeholder="Quality tags, scene, character descriptions..."
-              ></textarea>
-            </div>
-            <div class="prompt-field">
-              <div class="field-header">
-                <span class="field-label">Negative</span>
-              </div>
-              <textarea
-                class="prompt-textarea negative"
-                bind:value={editedNegative}
-                on:input={() => { promptDirty = true; }}
-                rows="2"
-                placeholder="Things to avoid..."
-              ></textarea>
-            </div>
-          {/if}
-        </div>
-      {/if}
-    </div>
+    {:else}
+      <button
+        class="action-btn img-btn"
+        on:click={() => {
+          illustrateExpanded = true;
+          if (enrichedPrompt === null && !isLoadingPrompt) {
+            onexpandprompt?.(turnNumber);
+          }
+        }}
+        disabled={isGeneratingImage}
+        title={imagePath ? 'Edit prompt and regenerate image' : 'Edit prompt and generate an image'}
+      >
+        {#if isGeneratingImage}
+          <span class="img-gen-pulse"></span> Generating...
+        {:else}
+          {#if imagePath}↺ Redraw Image{:else}🎨 Illustrate Scene{/if}
+        {/if}
+      </button>
+    {/if}
 
     <!-- Parse Warnings -->
     {#if parseWarnings.length > 0 && isLatestTurn}
@@ -327,6 +342,63 @@
       <div class="image-gen-error">
         <span class="error-icon-small">🖼</span>
         <span>Image generation failed: {imageError}</span>
+      </div>
+    {/if}
+
+    <!-- Rewrite Section (latest turn only) -->
+    {#if isLatestTurn}
+      <div class="rewrite-section">
+        {#if rewriteExpanded}
+          <div class="rewrite-editor">
+            <label class="rewrite-label">Edit your action before rewriting:</label>
+            <textarea
+              class="rewrite-textarea"
+              bind:value={editedUserInput}
+              on:input={(e) => { editedUserInput = (e.target as HTMLTextAreaElement).value; }}
+              rows="3"
+              placeholder="Edit your action..."
+            ></textarea>
+            <div class="rewrite-actions">
+              <button
+                class="action-btn rewrite-submit"
+                on:click={() => {
+                  if (editedUserInput.trim()) {
+                    onrewrite?.({ turnNumber, editedInput: editedUserInput });
+                    rewriteExpanded = false;
+                  }
+                }}
+                disabled={!editedUserInput.trim()}
+              >
+                ↻ Rewrite with changes
+              </button>
+              <button
+                class="action-btn rewrite-same"
+                on:click={() => {
+                  onregenerate?.(turnNumber);
+                  rewriteExpanded = false;
+                }}
+              >
+                ↻ Rewrite (same input)
+              </button>
+              <button
+                class="action-btn rewrite-cancel"
+                on:click={() => { rewriteExpanded = false; }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        {:else}
+          <button
+            class="action-btn regen-btn"
+            on:click={() => {
+              editedUserInput = userAction;
+              rewriteExpanded = true;
+            }}
+          >
+            ↻ Rewrite
+          </button>
+        {/if}
       </div>
     {/if}
   </div>
@@ -639,79 +711,44 @@
     opacity: 0.7;
   }
 
-  /* ── Prompt Bar (replaces image-actions) ── */
-  .prompt-bar {
+  /* ── Illustrate Editor ── */
+  .img-btn {
+    color: var(--text-muted, #6e7681);
+  }
+
+  .illustrate-editor {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 8px 12px;
-    background: color-mix(in srgb, var(--accent-primary, #58a6ff) 5%, var(--bg-secondary, #161b22));
-    border: 1px solid color-mix(in srgb, var(--accent-primary, #58a6ff) 12%, var(--border-secondary, #21262d));
-    border-radius: 8px;
-    margin-top: 4px;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.6rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-secondary, rgba(255, 255, 255, 0.08));
   }
 
-  .prompt-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .prompt-toggle {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex: 1;
-    min-width: 0;
-    background: none;
-    border: none;
-    color: var(--text-muted, #6e7681);
-    cursor: pointer;
-    padding: 2px 0;
+  .illustrate-label {
     font-size: 0.78rem;
-    font-family: inherit;
-    text-align: left;
-    overflow: hidden;
-  }
-
-  .prompt-toggle:hover {
-    color: var(--text-secondary, #8b949e);
-  }
-
-  .toggle-arrow {
-    font-size: 0.6rem;
-    flex-shrink: 0;
-    transition: transform 0.15s;
-  }
-
-  .toggle-arrow.expanded {
-    transform: rotate(90deg);
-  }
-
-  .prompt-label {
+    color: var(--text-muted, #6e7681);
     font-weight: 600;
-    color: var(--text-muted, #6e7681);
-    white-space: nowrap;
-    flex-shrink: 0;
   }
 
-  .prompt-preview {
-    color: var(--text-muted, #6e7681);
-    font-style: italic;
-    font-size: 0.9em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    opacity: 0.7;
-  }
-
-  .prompt-editor {
+  .illustrate-actions {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding-top: 4px;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.25rem;
+  }
+
+  .illustrate-confirm {
+    background: var(--accent-primary, #58a6ff) !important;
+    color: var(--text-inverse, #0d1117) !important;
+    font-weight: 600;
+  }
+
+  .illustrate-cancel {
+    background: transparent !important;
+    opacity: 0.7;
   }
 
   .prompt-loading {
@@ -868,5 +905,125 @@
   .transition-detail {
     color: var(--text-muted, #6e7681);
     font-style: italic;
+  }
+
+  /* ── Emotional State Indicator ── */
+  .emotional-states {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.74rem;
+    color: var(--text-muted, #6e7681);
+    border-left: 2px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    opacity: 0.65;
+  }
+
+  .emotional-state-entry {
+    white-space: nowrap;
+  }
+
+  .emotional-state-entry em {
+    font-style: italic;
+    color: var(--text-secondary, #8b949e);
+  }
+
+  /* ── Rewrite Section ── */
+  .rewrite-section {
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  }
+
+  .rewrite-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .rewrite-label {
+    font-size: 0.78rem;
+    color: var(--text-muted, #8b949e);
+    font-weight: 600;
+  }
+
+  .rewrite-textarea {
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-secondary, #333);
+    background: var(--bg-primary, #0d1117);
+    color: var(--text-primary, #c9d1d9);
+    font-family: inherit;
+    font-size: 0.88rem;
+    resize: vertical;
+    min-height: 60px;
+    box-sizing: border-box;
+  }
+
+  .rewrite-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary, #58a6ff);
+  }
+
+  .rewrite-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .action-btn {
+    padding: 5px 11px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-muted, #6e7681);
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 500;
+    font-family: inherit;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+
+  .action-btn:hover {
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--text-secondary, #8b949e);
+  }
+
+  .action-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .regen-btn {
+    color: var(--text-muted, #6e7681);
+  }
+
+  .rewrite-submit {
+    background: var(--accent-primary, #58a6ff) !important;
+    border-color: var(--accent-primary, #58a6ff) !important;
+    color: var(--text-inverse, #0d1117) !important;
+    font-weight: 600;
+  }
+
+  .rewrite-submit:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-primary, #58a6ff) 85%, white) !important;
+  }
+
+  .rewrite-same {
+    background: rgba(255,255,255,0.06) !important;
+  }
+
+  .rewrite-cancel {
+    background: transparent !important;
+    border-color: transparent !important;
+    opacity: 0.7;
+  }
+
+  .rewrite-cancel:hover {
+    opacity: 1;
+    background: rgba(255,255,255,0.04) !important;
   }
 </style>

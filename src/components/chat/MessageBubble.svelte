@@ -11,6 +11,8 @@
     imageError = undefined,
     onGenerateImage,
     onRegenerate,
+    onRewriteWithInput,
+    lastUserInput = '',
   }: {
     message: ChatMessage;
     isLast?: boolean;
@@ -19,12 +21,18 @@
     imageError?: string;
     onGenerateImage?: (positivePrompt?: string, negativePrompt?: string) => void;
     onRegenerate?: () => void;
+    onRewriteWithInput?: (input: string) => void;
+    lastUserInput?: string;
   } = $props();
+
+  // ── Rewrite editor state ──
+  let rewriteExpanded = $state(false);
+  let editedUserInput = $state('');
 
   let showLightbox = $state(false);
 
-  // ── Expandable prompt editor ──
-  let promptExpanded = $state(false);
+  // ── Illustrate editor ──
+  let illustrateExpanded = $state(false);
   let editedPositive = $state('');
   let editedNegative = $state('');
   let promptDirty = $state(false);
@@ -68,75 +76,108 @@
     <div class="story-block">
       <div class="story-text">{message.data.story}</div>
 
-      {#if message.data.sd_prompt}
-        <div class="sd-details">
-          <!-- Collapsible prompt bar -->
-          <div class="prompt-bar">
-            <button class="prompt-toggle" onclick={() => promptExpanded = !promptExpanded}>
-              <span class="toggle-arrow" class:expanded={promptExpanded}>▶</span>
-              <span class="prompt-label">Visual Prompt:</span>
-              {#if !promptExpanded}
-                <span class="prompt-preview">{message.data.sd_prompt}</span>
+      {#if illustrateExpanded}
+        <div class="illustrate-editor">
+          <span class="illustrate-label">Edit visual prompt before generating:</span>
+          <div class="prompt-field">
+            <div class="field-header">
+              <span class="field-label">Positive</span>
+              {#if isEdited}
+                <button class="reset-btn" onclick={resetPrompts} title="Reset to auto-generated">↺ Reset</button>
               {/if}
+            </div>
+            <textarea
+              class="prompt-textarea"
+              bind:value={editedPositive}
+              oninput={() => { promptDirty = true; }}
+              rows="4"
+              placeholder="Quality tags, scene, character descriptions..."
+            ></textarea>
+          </div>
+          <div class="prompt-field">
+            <div class="field-header">
+              <span class="field-label">Negative</span>
+            </div>
+            <textarea
+              class="prompt-textarea negative"
+              bind:value={editedNegative}
+              oninput={() => { promptDirty = true; }}
+              rows="2"
+              placeholder="Things to avoid..."
+            ></textarea>
+          </div>
+          <div class="illustrate-actions">
+            <button
+              class="action-btn illustrate-confirm"
+              onclick={() => { handleIllustrate(); illustrateExpanded = false; }}
+              disabled={isLoading || isGeneratingImage}
+            >
+              {message.image ? '↺ Redraw Image' : '🎨 Generate Image'}{#if isEdited}<span class="edited-badge">edited</span>{/if}
             </button>
-
-            {#if promptExpanded}
-              <div class="prompt-editor">
-                <div class="prompt-field">
-                  <div class="field-header">
-                    <span class="field-label">Positive</span>
-                    {#if isEdited}
-                      <button class="reset-btn" onclick={resetPrompts} title="Reset to auto-generated">↺ Reset</button>
-                    {/if}
-                  </div>
-                  <textarea
-                    class="prompt-textarea"
-                    bind:value={editedPositive}
-                    oninput={() => { promptDirty = true; }}
-                    rows="4"
-                    placeholder="Quality tags, scene, character descriptions..."
-                  ></textarea>
-                </div>
-                <div class="prompt-field">
-                  <div class="field-header">
-                    <span class="field-label">Negative</span>
-                  </div>
-                  <textarea
-                    class="prompt-textarea negative"
-                    bind:value={editedNegative}
-                    oninput={() => { promptDirty = true; }}
-                    rows="2"
-                    placeholder="Things to avoid..."
-                  ></textarea>
-                </div>
-              </div>
-            {/if}
+            <button
+              class="action-btn illustrate-cancel"
+              onclick={() => { illustrateExpanded = false; }}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       {/if}
 
       <div class="actions-row">
-        <button
-          class="action-btn img-btn"
-          class:edited={isEdited}
-          onclick={handleIllustrate}
-          disabled={isLoading || isGeneratingImage}
-        >
+        {#if !illustrateExpanded}
           {#if isGeneratingImage}
-            <span class="spinner">↻</span> Generating...
+            <span class="action-btn img-btn" style="cursor:default; opacity:0.7;">
+              <span class="spinner">↻</span> Generating...
+            </span>
           {:else}
-            {message.image ? '↻ Redraw Image' : '🎨 Illustrate Scene'}{#if isEdited}<span class="edited-badge">edited</span>{/if}
+            <button
+              class="action-btn img-btn"
+              onclick={() => { illustrateExpanded = true; }}
+              disabled={isLoading}
+            >
+              {message.image ? '↺ Redraw Image' : '🎨 Illustrate Scene'}
+            </button>
           {/if}
-        </button>
+        {/if}
 
         {#if isLast && message.sender === 'ai'}
-          <button
-            class="action-btn regen-btn"
-            onclick={onRegenerate}
-            disabled={isLoading}
-          >
-            ↻ Rewrite Story
-          </button>
+          {#if rewriteExpanded}
+            <div class="rewrite-editor">
+              <label class="rewrite-label">Edit your action before rewriting:</label>
+              <textarea
+                class="rewrite-textarea"
+                bind:value={editedUserInput}
+                oninput={(e) => { editedUserInput = e.currentTarget.value; }}
+                rows="3"
+                placeholder="Edit your action..."
+              ></textarea>
+              <div class="rewrite-actions">
+                <button
+                  class="action-btn rewrite-submit"
+                  onclick={() => { if (editedUserInput.trim()) { onRewriteWithInput?.(editedUserInput); rewriteExpanded = false; } }}
+                  disabled={!editedUserInput.trim() || isLoading}
+                >↻ Rewrite with changes</button>
+                <button
+                  class="action-btn regen-btn"
+                  onclick={() => { onRegenerate?.(); rewriteExpanded = false; }}
+                  disabled={isLoading}
+                >↻ Rewrite (same input)</button>
+                <button
+                  class="action-btn rewrite-cancel"
+                  onclick={() => { rewriteExpanded = false; }}
+                >Cancel</button>
+              </div>
+            </div>
+          {:else}
+            <button
+              class="action-btn regen-btn"
+              onclick={() => { editedUserInput = lastUserInput ?? ''; rewriteExpanded = true; }}
+              disabled={isLoading}
+            >
+              ↻ Rewrite Story
+            </button>
+          {/if}
         {/if}
       </div>
 
@@ -214,74 +255,49 @@
     padding-top: 8px;
   }
 
-  /* ── Prompt Bar ── */
-  .prompt-bar {
+  /* ── Illustrate Editor ── */
+  .illustrate-editor {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-  }
-
-  .prompt-toggle {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 4px;
-    color: var(--text-secondary);
-    cursor: pointer;
-    padding: 6px 8px;
-    font-size: 0.82em;
-    font-family: monospace;
-    text-align: left;
-    width: 100%;
-    overflow: hidden;
-    transition: border-color 0.15s, color 0.15s;
-  }
-
-  .prompt-toggle:hover {
-    color: var(--text-primary);
-    border-color: var(--accent-primary);
-  }
-
-  .toggle-arrow {
-    font-size: 0.65em;
-    flex-shrink: 0;
-    transition: transform 0.15s;
-  }
-
-  .toggle-arrow.expanded {
-    transform: rotate(90deg);
-  }
-
-  .prompt-label {
-    font-weight: 600;
-    white-space: nowrap;
-    flex-shrink: 0;
-    font-family: sans-serif;
-  }
-
-  .prompt-preview {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    opacity: 0.75;
-  }
-
-  .prompt-editor {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 4px;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
     animation: slideDown 0.15s ease-out;
   }
 
   @keyframes slideDown {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  .illustrate-label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .illustrate-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.25rem;
+  }
+
+  .illustrate-confirm {
+    background: var(--accent-primary) !important;
+    color: var(--text-inverse) !important;
+    border-color: var(--accent-primary) !important;
+    font-weight: 600;
+  }
+
+  .illustrate-cancel {
+    background: transparent !important;
+    border: 1px solid var(--border-primary) !important;
+    color: var(--text-muted) !important;
+    opacity: 0.8;
   }
 
   .prompt-field {
@@ -391,6 +407,63 @@
     border: 1px solid var(--accent-warning);
   }
   .regen-btn:hover:not(:disabled) { background: var(--bg-hover); }
+
+  /* ── Rewrite editor ── */
+  .rewrite-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+  }
+
+  .rewrite-label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .rewrite-textarea {
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.88rem;
+    resize: vertical;
+    min-height: 60px;
+    box-sizing: border-box;
+  }
+
+  .rewrite-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+  }
+
+  .rewrite-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .rewrite-submit {
+    background: var(--accent-primary) !important;
+    color: var(--text-inverse) !important;
+    border-color: var(--accent-primary) !important;
+    font-weight: 600;
+  }
+
+  .rewrite-cancel {
+    background: transparent !important;
+    border: 1px solid var(--border-primary) !important;
+    color: var(--text-muted) !important;
+    opacity: 0.8;
+  }
 
   .img-container {
     margin-top: 15px;

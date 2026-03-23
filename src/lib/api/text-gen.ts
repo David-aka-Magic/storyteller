@@ -73,6 +73,14 @@ export async function regenerateStory(id: number, storyId?: number): Promise<Sto
   return invoke('regenerate_story', { id, storyId: storyId ?? null });
 }
 
+export async function regenerateStoryWithInput(
+  id: number,
+  userInput: string,
+  storyId?: number
+): Promise<StoryTurnResult> {
+  return invoke('regenerate_story_with_input', { id, userInput, storyId: storyId ?? null });
+}
+
 // ---- LLM Parser ----
 
 export async function parseStoryTurn(rawOutput: string): Promise<ParsedTurn> {

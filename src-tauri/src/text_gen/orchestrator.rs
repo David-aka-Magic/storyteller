@@ -29,7 +29,7 @@ use crate::text_gen::context::{
     build_compressed_context, estimate_tokens, get_diagnostics, CharacterInfo,
     CompressionDiagnostics, ConversationContext,
 };
-use crate::text_gen::parser::{self as llm_parser, ParseStatus, ParsedTurn, SceneJson};
+use crate::text_gen::parser::{self as llm_parser, CharacterEmotionalState, ParseStatus, ParsedTurn, SceneJson};
 use crate::text_gen::prompts::{
     get_response_length_config, NUM_CTX, OLLAMA_MAX_RETRIES, OLLAMA_REQUEST_TIMEOUT_SECS,
     STORY_MODEL, SYSTEM_PROMPT,
@@ -113,6 +113,8 @@ pub struct StoryTurnResult {
     pub enriched_prompt: Option<String>,
     /// Full negative SDXL prompt built for this turn.
     pub negative_prompt: Option<String>,
+    /// Emotional states for each character at the end of this turn.
+    pub emotional_states: Vec<CharacterEmotionalState>,
 }
 
 /// Preview of the enriched SDXL prompts for a scene, without generating an image.
@@ -1458,6 +1460,7 @@ pub async fn process_story_turn(
         active_scene_id: post_turn_active_scene_id,
         enriched_prompt: enriched_prompt_preview,
         negative_prompt: negative_prompt_preview,
+        emotional_states: parsed.emotional_states().to_vec(),
     })
 }
 
@@ -2606,6 +2609,101 @@ pub async fn regenerate_story(
     }
 
     // 4. Re-run the full turn pipeline with the same user input
+    process_story_turn(id, user_input, story_id, state, config_state, hint_state, app).await
+}
+
+/// Regenerate the last AI response with modified user input.
+///
+/// Like `regenerate_story`, deletes the last user + assistant pair,
+/// then re-runs the pipeline with the NEW user input provided.
+///
+/// ## Frontend usage
+/// ```typescript
+/// const result = await invoke('regenerate_story_with_input', {
+///   id: chatId,
+///   userInput: "edited text",
+///   storyId
+/// });
+/// ```
+#[tauri::command]
+pub async fn regenerate_story_with_input(
+    id: i64,
+    user_input: String,
+    story_id: Option<i64>,
+    state: State<'_, OllamaState>,
+    config_state: State<'_, ConfigState>,
+    hint_state: State<'_, SceneHintState>,
+    app: AppHandle,
+) -> Result<StoryTurnResult, String> {
+    println!(
+        "\n[Orchestrator] ========== REGENERATE WITH EDIT (chat={}, story={:?}) ==========",
+        id, story_id
+    );
+
+    // 1. Load all messages to find the last user + assistant pair
+    let rows = sqlx::query(
+        "SELECT id, role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Failed to load messages: {}", e))?;
+
+    let mut last_user_id: Option<i64> = None;
+    let mut last_assistant_id: Option<i64> = None;
+
+    for row in &rows {
+        let role: String = row.get("role");
+        let msg_id: i64 = row.get("id");
+        match role.as_str() {
+            "user" => {
+                last_user_id = Some(msg_id);
+            }
+            "assistant" => {
+                last_assistant_id = Some(msg_id);
+            }
+            _ => {}
+        }
+    }
+
+    if last_user_id.is_none() {
+        return Err("No user message found to regenerate".to_string());
+    }
+
+    println!(
+        "[Orchestrator] Regenerating with edited input: {:?}",
+        &user_input[..user_input.len().min(80)]
+    );
+
+    // 2. Delete last assistant message and its image record
+    if let Some(asst_id) = last_assistant_id {
+        sqlx::query("DELETE FROM images WHERE message_id = ?")
+            .bind(asst_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Failed to delete image record: {}", e))?;
+
+        sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(asst_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Failed to delete assistant message: {}", e))?;
+
+        println!("[Orchestrator] Deleted assistant message id={}", asst_id);
+    }
+
+    // 3. Delete last user message (process_story_turn will save the NEW input)
+    if let Some(user_id) = last_user_id {
+        sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(user_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Failed to delete user message: {}", e))?;
+
+        println!("[Orchestrator] Deleted user message id={}", user_id);
+    }
+
+    // 4. Re-run the full turn pipeline with the EDITED user input
     process_story_turn(id, user_input, story_id, state, config_state, hint_state, app).await
 }
 

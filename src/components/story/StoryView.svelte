@@ -32,13 +32,14 @@
   import {
     hasGeneratedImage,
     imageGenStatus,
+    type CharacterEmotionalState,
     type StoryTurnResult,
     type CharacterInScene,
     type OrchestratorCompressionInfo,
     type SceneJson,
     type CharacterProfile,
   } from '$lib/types';
-  import { processStoryTurn, generateSceneImageForTurn, previewScenePrompt, illustrateSceneCustom } from '$lib/api/text-gen';
+  import { processStoryTurn, generateSceneImageForTurn, previewScenePrompt, illustrateSceneCustom, regenerateStory, regenerateStoryWithInput } from '$lib/api/text-gen';
   import { saveImageForMessage } from '$lib/api/chat';
   import { clearImageCache } from '$lib/utils/image-url';
 
@@ -87,6 +88,8 @@
     enrichedPrompt: string | null;
     /** Enriched negative SDXL prompt (loaded lazily on expand). */
     negativePrompt: string | null;
+    /** Emotional states for each character at the end of this turn. */
+    emotionalStates: CharacterEmotionalState[];
   }
 
   /** Pending scene-swap suggestion shown above the input (user-initiated). */
@@ -164,6 +167,7 @@
             scenePrompt: typeof storyText === 'string' ? storyText : 'Story data loaded.',
             enrichedPrompt: null,
             negativePrompt: null,
+            emotionalStates: [],
           };
         });
       }
@@ -243,6 +247,7 @@
         scenePrompt: builtScenePrompt,
         enrichedPrompt: result.enriched_prompt ?? null,
         negativePrompt: result.negative_prompt ?? null,
+        emotionalStates: result.emotional_states ?? [],
       };
 
       turns = [...turns, displayTurn];
@@ -336,6 +341,145 @@
       console.warn('[StoryView] Failed to load prompt preview:', e);
     } finally {
       loadingPromptForTurn = null;
+    }
+  }
+
+  async function handleRewrite(data: { turnNumber: number; editedInput: string }) {
+    if (!chatId || isGenerating) return;
+
+    isGenerating = true;
+    isGeneratingImage = false;
+    lastError = null;
+
+    try {
+      const imageTimer = setTimeout(() => {
+        if (isGenerating) isGeneratingImage = true;
+      }, 4000);
+
+      const result: StoryTurnResult = await regenerateStoryWithInput(
+        chatId,
+        data.editedInput,
+        storyId ?? undefined
+      );
+
+      clearTimeout(imageTimer);
+
+      const prevLocation = currentScene?.location ?? null;
+      const newLocation = result.scene?.location ?? null;
+      const sceneTransition =
+        newLocation && newLocation !== prevLocation
+          ? { location: newLocation, timeOfDay: result.scene?.time_of_day || undefined, mood: result.scene?.mood || undefined }
+          : null;
+
+      const builtScenePrompt = buildScenePrompt(result.scene, result.story_text);
+      const displayTurn: DisplayTurn = {
+        turnNumber: result.turn_id || data.turnNumber,
+        userAction: data.editedInput,
+        storyText: result.story_text,
+        imagePath: result.generated_image_path,
+        scene: result.scene,
+        characters: result.characters,
+        parseStatus: result.parse_status as 'ok' | 'partial' | 'fallback',
+        parseWarnings: result.parse_warnings,
+        imageError: result.image_generation_error,
+        messageId: result.assistant_message_id ?? null,
+        sceneTransition,
+        scenePrompt: builtScenePrompt,
+        enrichedPrompt: result.enriched_prompt ?? null,
+        negativePrompt: result.negative_prompt ?? null,
+        emotionalStates: result.emotional_states ?? [],
+      };
+
+      turns = [...turns.filter(t => t.turnNumber !== data.turnNumber), displayTurn];
+
+      if (result.scene) {
+        currentScene = result.scene;
+        if (result.scene.location) updateLocation(result.scene.location);
+      }
+      if (result.characters.length > 0) currentCharacters = result.characters;
+      compressionInfo = result.compression_info;
+      if (result.active_scene_id != null) {
+        onscenechanged?.(result.active_scene_id, sceneTransition !== null);
+      }
+      if (result.generated_image_path) updateThumbnail(result.generated_image_path);
+
+      await scrollToBottom();
+      storyInputRef?.focus();
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      console.error('[StoryView] Rewrite failed:', lastError);
+    } finally {
+      isGenerating = false;
+      isGeneratingImage = false;
+    }
+  }
+
+  async function handleRegenerate(turnNumber: number) {
+    if (!chatId || isGenerating) return;
+
+    isGenerating = true;
+    isGeneratingImage = false;
+    lastError = null;
+
+    try {
+      const imageTimer = setTimeout(() => {
+        if (isGenerating) isGeneratingImage = true;
+      }, 4000);
+
+      const result: StoryTurnResult = await regenerateStory(chatId, storyId ?? undefined);
+
+      clearTimeout(imageTimer);
+
+      const oldTurn = turns.find(t => t.turnNumber === turnNumber);
+      const originalAction = oldTurn?.userAction ?? '';
+
+      const prevLocation = currentScene?.location ?? null;
+      const newLocation = result.scene?.location ?? null;
+      const sceneTransition =
+        newLocation && newLocation !== prevLocation
+          ? { location: newLocation, timeOfDay: result.scene?.time_of_day || undefined, mood: result.scene?.mood || undefined }
+          : null;
+
+      const builtScenePrompt = buildScenePrompt(result.scene, result.story_text);
+      const displayTurn: DisplayTurn = {
+        turnNumber: result.turn_id || turnNumber,
+        userAction: originalAction,
+        storyText: result.story_text,
+        imagePath: result.generated_image_path,
+        scene: result.scene,
+        characters: result.characters,
+        parseStatus: result.parse_status as 'ok' | 'partial' | 'fallback',
+        parseWarnings: result.parse_warnings,
+        imageError: result.image_generation_error,
+        messageId: result.assistant_message_id ?? null,
+        sceneTransition,
+        scenePrompt: builtScenePrompt,
+        enrichedPrompt: result.enriched_prompt ?? null,
+        negativePrompt: result.negative_prompt ?? null,
+        emotionalStates: result.emotional_states ?? [],
+      };
+
+      turns = [...turns.filter(t => t.turnNumber !== turnNumber), displayTurn];
+
+      if (result.scene) {
+        currentScene = result.scene;
+        if (result.scene.location) updateLocation(result.scene.location);
+      }
+      if (result.characters.length > 0) currentCharacters = result.characters;
+      compressionInfo = result.compression_info;
+      if (result.active_scene_id != null) {
+        onscenechanged?.(result.active_scene_id, sceneTransition !== null);
+      }
+      if (result.generated_image_path) updateThumbnail(result.generated_image_path);
+
+      await scrollToBottom();
+      storyInputRef?.focus();
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      console.error('[StoryView] Regenerate failed:', lastError);
+    } finally {
+      isGenerating = false;
+      isGeneratingImage = false;
     }
   }
 
@@ -491,9 +635,12 @@
             enrichedPrompt={turn.enrichedPrompt}
             negativePrompt={turn.negativePrompt}
             isLoadingPrompt={loadingPromptForTurn === turn.turnNumber}
+            emotionalStates={turn.emotionalStates}
             oncharacterclick={handleCharacterClick}
             onillustratescene={handleIllustrate}
             onexpandprompt={handleExpandPrompt}
+            onrewrite={handleRewrite}
+            onregenerate={handleRegenerate}
           />
         {/each}
       </div>
