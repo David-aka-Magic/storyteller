@@ -93,8 +93,13 @@ pub fn detect_gpu() -> GpuInfo {
     {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
-            // Lines may have multiple adapters; pick the first discrete GPU
-            for line in text.lines() {
+            let lines: Vec<&str> = text.lines().collect();
+
+            // Pass 1: Look for discrete GPUs only.
+            // NVIDIA is always discrete (GeForce, RTX, GTX, Quadro).
+            // AMD is only discrete if it has "rx " in the name (e.g. RX 7900).
+            // "AMD Radeon(TM) Graphics" without "RX" is an integrated APU — skip it.
+            for line in &lines {
                 let lower = line.to_lowercase();
                 if lower.contains("nvidia") || lower.contains("geforce") || lower.contains("quadro") || lower.contains("rtx") || lower.contains("gtx") {
                     return GpuInfo {
@@ -102,15 +107,27 @@ pub fn detect_gpu() -> GpuInfo {
                         name: line.trim().to_string(),
                     };
                 }
-                if lower.contains("amd") || lower.contains("radeon") || lower.contains("rx ") {
+                if lower.contains("rx ") {
                     return GpuInfo {
                         vendor: "amd".to_string(),
                         name: line.trim().to_string(),
                     };
                 }
             }
-            // If we got output but didn't match above, take the first non-empty line
-            if let Some(first) = text.lines().find(|l| !l.trim().is_empty()) {
+
+            // Pass 2: No discrete GPU found. Fall back to any AMD/Radeon (integrated APU),
+            // then Intel, then first non-empty line as unknown.
+            for line in &lines {
+                let lower = line.to_lowercase();
+                if lower.contains("amd") || lower.contains("radeon") {
+                    return GpuInfo {
+                        vendor: "amd".to_string(),
+                        name: line.trim().to_string(),
+                    };
+                }
+            }
+
+            if let Some(first) = lines.iter().find(|l| !l.trim().is_empty()) {
                 let lower = first.to_lowercase();
                 let vendor = if lower.contains("intel") { "intel" } else { "unknown" };
                 return GpuInfo {
