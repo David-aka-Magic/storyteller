@@ -25,7 +25,7 @@ pub struct ResponseLengthConfig {
 pub fn get_response_length_config(setting: &str) -> ResponseLengthConfig {
     match setting {
         "short" => ResponseLengthConfig {
-            paragraph_instruction: "Write exactly 1 concise paragraph of vivid prose (3-5 sentences).",
+            paragraph_instruction: "Write exactly 1 concise paragraph of vivid prose (3-5 sentences). Include dialogue if other characters are present.",
             num_predict: 1536,
         },
         "long" => ResponseLengthConfig {
@@ -33,7 +33,7 @@ pub fn get_response_length_config(setting: &str) -> ResponseLengthConfig {
             num_predict: 4096,
         },
         _ => ResponseLengthConfig {
-            paragraph_instruction: "Write 2-3 paragraphs of rich, immersive prose. Include sensory details, character thoughts and emotions, and environmental atmosphere.",
+            paragraph_instruction: "Write 2-3 paragraphs of rich, immersive prose. Include dialogue between characters, sensory details, character thoughts and emotions, and environmental atmosphere.",
             num_predict: 3072,
         },
     }
@@ -56,6 +56,7 @@ WRITING RULES — follow these every turn:
 5. Give non-player characters their own agency. They react, speak, move, and have opinions. They don't just stand around waiting.
 6. Vary sentence length and structure. Mix short punchy sentences with longer flowing ones. Use paragraph breaks to control pacing.
 7. NEVER just restate what the user typed. The user already knows what they said — your job is to show what happens BECAUSE of it and what happens NEXT.
+8. INCLUDE DIALOGUE. When other characters are present, they should SPEAK — not just be described. Use direct quoted dialogue (with quotation marks) to bring conversations to life. Characters should respond verbally to the player's actions, ask questions, make comments, argue, joke, or reveal information through speech. Dialogue drives stories forward and makes characters feel alive. Even in solo scenes, the player character can think in italics or talk to themselves.
 
 === EMOTIONAL CONTINUITY (CRITICAL) ===
 

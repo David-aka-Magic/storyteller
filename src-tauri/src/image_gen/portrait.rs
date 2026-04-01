@@ -790,7 +790,7 @@ pub async fn save_master_portrait(
         .to_lowercase()
         .replace(' ', "_")
         .replace(|c: char| !c.is_alphanumeric() && c != '_', "");
-    let master_filename = format!("{}_master.png", char_name_safe);
+    let master_filename = format!("{}_{}_master.png", char_name_safe, request.character_id);
     let master_path = master_dir.join(&master_filename);
 
     std::fs::copy(source_path, &master_path).map_err(|e| {

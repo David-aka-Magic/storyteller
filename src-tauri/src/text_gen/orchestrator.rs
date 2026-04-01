@@ -409,16 +409,10 @@ async fn lookup_characters_in_db(
             .map_err(|e| format!("Character lookup failed for '{}': {}", scene_char.name, e))?;
 
             if r.is_none() {
-                // Fallback to global search
-                println!("[Orchestrator] '{}' not found in story {}, trying global lookup", scene_char.name, sid);
-                sqlx::query(
-                    "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender \
-                     FROM characters WHERE name = ? LIMIT 1",
-                )
-                .bind(&scene_char.name)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| format!("Global lookup failed for '{}': {}", scene_char.name, e))?
+                // No global fallback — if the character isn't in this story, skip it
+                // to avoid pulling in a same-named character from a different story
+                println!("[Orchestrator] '{}' not found in story {} — skipping (no global fallback)", scene_char.name, sid);
+                None
             } else {
                 r
             }

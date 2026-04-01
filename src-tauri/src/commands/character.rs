@@ -407,17 +407,8 @@ pub async fn lookup_scene_characters(
             .map_err(|e| e.to_string())?;
 
             if r.is_none() {
-                // Fallback to global search
-                sqlx::query(
-                    r#"
-                    SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
-                    FROM characters WHERE name = ? LIMIT 1
-                    "#
-                )
-                .bind(&scene_char.name)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(|e| e.to_string())?
+                // No global fallback when story-scoped — avoids same-name collisions
+                None
             } else {
                 r
             }

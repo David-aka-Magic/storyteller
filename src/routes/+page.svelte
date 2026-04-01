@@ -9,6 +9,7 @@
   import ScenePanel from '../components/layout/ScenePanel.svelte';
   import SceneTransitionSuggestion from '../components/story/SceneTransitionSuggestion.svelte';
   import CharacterModal from '../components/CharacterModal.svelte';
+  import AllCharactersModal from '../components/AllCharactersModal.svelte';
   import StoryModal from '../components/StoryModal.svelte';
   import SettingsModal from '../components/settings/SettingsModal.svelte';
   import StoryGallery from '../components/story/StoryGallery.svelte';
@@ -38,6 +39,7 @@
   let isLoading = false;
 
   let showCharModal = false;
+  let showAllCharsModal = false;
   let characterToEdit: CharacterProfile | null = null;
   let characters: CharacterProfile[] = [];
   let allCharacters: CharacterProfile[] = [];
@@ -496,6 +498,7 @@
         onClearChat={clearChat}
         onOpenGallery={() => showGallery = !showGallery}
         onCreateCharacter={() => { characterToEdit = null; showCharModal = true; }}
+        onViewAllCharacters={() => { fetchCharacterList(); showAllCharsModal = true; }}
       />
       {#if showGallery && selectedStoryId && selectedStoryId !== '1'}
         <StoryGallery
@@ -550,6 +553,14 @@
       character={characterToEdit}
       onsave={handleSaveCharacter}
       onclose={() => showCharModal = false}
+    />
+
+    <AllCharactersModal
+      show={showAllCharsModal}
+      characters={allCharacters}
+      onclose={() => showAllCharsModal = false}
+      onedit={(char) => { showAllCharsModal = false; characterToEdit = char; showCharModal = true; }}
+      ondelete={async (id) => { await deleteCharacter(id); fetchCharacterList(); }}
     />
 
     <StoryModal

@@ -7,6 +7,7 @@
     onClearChat,
     onOpenGallery,
     onCreateCharacter,
+    onViewAllCharacters,
   }: {
     title?: string;
     isLoading?: boolean;
@@ -14,6 +15,7 @@
     onClearChat?: () => void;
     onOpenGallery?: () => void;
     onCreateCharacter?: () => void;
+    onViewAllCharacters?: () => void;
   } = $props();
 </script>
 
@@ -22,6 +24,13 @@
     <h1>{title}</h1>
   </div>
   <div class="topbar-right">
+    <button
+      class="all-chars-btn"
+      onclick={onViewAllCharacters}
+      title="View all characters across all stories"
+    >
+      👥 All Characters
+    </button>
     <button
       class="create-char-btn"
       onclick={onCreateCharacter}
@@ -104,6 +113,18 @@
     transition: all 0.2s;
   }
   .gallery-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+  .all-chars-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-secondary);
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s;
+  }
+  .all-chars-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
   .clear-btn {
     background: var(--accent-danger);
