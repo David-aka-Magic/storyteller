@@ -170,6 +170,11 @@ pub async fn generate_scene_image(
         super::workflow::inject_controlnet(&mut workflow, skeleton_name, cn_strength)?;
     }
 
+    // Inject hi-res fix for sharper facial detail (mimics A1111 Hires. fix)
+    // Uses conservative settings: 1.5x upscale, 0.45 denoise, 15 steps
+    // This keeps generation time reasonable while dramatically improving face/eye quality.
+    super::workflow::inject_hires_fix(&mut workflow, 1.5, 0.45, 15)?;
+
     println!(
         "[ComfyUI][DEBUG] Final workflow JSON:\n{}",
         serde_json::to_string_pretty(&workflow)

@@ -88,6 +88,9 @@ pub struct MasterPortraitRequest {
     pub height_scale: Option<i32>,
     #[serde(default)]
     pub weight_scale: Option<i32>,
+    /// Optional: override the checkpoint filename (for custom checkpoints).
+    #[serde(default)]
+    pub checkpoint_override: Option<String>,
 }
 
 impl Default for MasterPortraitRequest {
@@ -109,6 +112,7 @@ impl Default for MasterPortraitRequest {
             eye_color: None,
             height_scale: Some(3),
             weight_scale: Some(3),
+            checkpoint_override: None,
         }
     }
 }
@@ -517,10 +521,15 @@ fn build_portrait_workflow(
     negative_prompt: &str,
     seed: i64,
     art_style: Option<&str>,
+    checkpoint_override: Option<&str>,
 ) -> Value {
-    let ckpt_name = match art_style {
-        Some("Anime") => "animagine-xl-3.1.safetensors",
-        _ => "juggernautXL_ragnarokBy.safetensors",
+    let ckpt_name = if let Some(override_file) = checkpoint_override {
+        override_file
+    } else {
+        match art_style {
+            Some("Anime") => "animagine-xl-3.1.safetensors",
+            _ => "juggernautXL_ragnarokBy.safetensors",
+        }
     };
 
     json!({
@@ -659,7 +668,8 @@ pub async fn generate_master_portrait(
     );
 
     // 3. Build workflow
-    let workflow = build_portrait_workflow(&prompt, &negative, seed, request.art_style.as_deref());
+    let checkpoint_override = request.checkpoint_override.as_deref();
+    let workflow = build_portrait_workflow(&prompt, &negative, seed, request.art_style.as_deref(), checkpoint_override);
 
     // 4. Free VRAM: unload Ollama model before ComfyUI needs the GPU
     {
@@ -923,7 +933,7 @@ mod tests {
     #[test]
     fn test_portrait_workflow_structure() {
         let workflow =
-            build_portrait_workflow("test prompt", "test negative", 42, Some("Realistic"));
+            build_portrait_workflow("test prompt", "test negative", 42, Some("Realistic"), None);
 
         assert_eq!(workflow["1"]["class_type"], "CheckpointLoaderSimple");
         assert_eq!(workflow["2"]["class_type"], "CLIPTextEncode");
@@ -937,13 +947,13 @@ mod tests {
 
     #[test]
     fn test_anime_uses_different_checkpoint() {
-        let workflow = build_portrait_workflow("test", "neg", 0, Some("Anime"));
+        let workflow = build_portrait_workflow("test", "neg", 0, Some("Anime"), None);
         assert_eq!(
             workflow["1"]["inputs"]["ckpt_name"],
             "animagine-xl-3.1.safetensors"
         );
 
-        let workflow_real = build_portrait_workflow("test", "neg", 0, Some("Realistic"));
+        let workflow_real = build_portrait_workflow("test", "neg", 0, Some("Realistic"), None);
         assert_eq!(
             workflow_real["1"]["inputs"]["ckpt_name"],
             "juggernautXL_ragnarokBy.safetensors"

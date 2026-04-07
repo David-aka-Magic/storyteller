@@ -17,6 +17,7 @@ export interface MasterPortraitRequest {
   eye_color?: string | null;
   height_scale?: number | null;
   weight_scale?: number | null;
+  checkpoint_override?: string | null;
 }
 
 export interface SaveMasterPortraitRequest {

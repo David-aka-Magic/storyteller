@@ -38,6 +38,17 @@ pub struct GpuInfo {
     pub vendor: String,
     /// Human-readable GPU name from the OS
     pub name: String,
+    /// Whether this GPU is expected to work for AI acceleration
+    pub supported: bool,
+    /// User-facing guidance notes
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaGpuStatus {
+    pub using_gpu: bool,
+    pub processor_info: String,
+    pub raw_output: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +87,17 @@ fn comfyui_dir(app: &AppHandle) -> PathBuf {
         .join("comfyui")
 }
 
+/// Returns (supported, notes) for an AMD GPU by name.
+/// RX 6000/7000 series are ROCm-capable on Windows via Ollama v0.4.0+.
+fn amd_rocm_info(name: &str) -> (bool, String) {
+    let lower = name.to_lowercase();
+    if lower.contains("rx 6") || lower.contains("rx 7") {
+        (true, "Your AMD GPU should work with Ollama via ROCm. Make sure you have the latest Ollama installed (v0.4.0+) which includes ROCm support on Windows. You may also need to install the AMD ROCm/HIP SDK from https://www.amd.com/en/developer/resources/rocm-hub.html".to_string())
+    } else {
+        (false, "Your AMD GPU may not be supported by ROCm. Ollama will fall back to CPU mode. Consider upgrading to an RX 6000/7000 series GPU for GPU acceleration.".to_string())
+    }
+}
+
 /// Detect the primary discrete GPU vendor and name.
 ///
 /// Uses PowerShell's Get-CimInstance on Windows (preferred over deprecated wmic).
@@ -105,13 +127,14 @@ pub fn detect_gpu() -> GpuInfo {
                     return GpuInfo {
                         vendor: "nvidia".to_string(),
                         name: line.trim().to_string(),
+                        supported: true,
+                        notes: "NVIDIA GPU detected. Ensure CUDA drivers are up to date.".to_string(),
                     };
                 }
                 if lower.contains("rx ") {
-                    return GpuInfo {
-                        vendor: "amd".to_string(),
-                        name: line.trim().to_string(),
-                    };
+                    let name = line.trim().to_string();
+                    let (supported, notes) = amd_rocm_info(&name);
+                    return GpuInfo { vendor: "amd".to_string(), name, supported, notes };
                 }
             }
 
@@ -120,10 +143,9 @@ pub fn detect_gpu() -> GpuInfo {
             for line in &lines {
                 let lower = line.to_lowercase();
                 if lower.contains("amd") || lower.contains("radeon") {
-                    return GpuInfo {
-                        vendor: "amd".to_string(),
-                        name: line.trim().to_string(),
-                    };
+                    let name = line.trim().to_string();
+                    let (supported, notes) = amd_rocm_info(&name);
+                    return GpuInfo { vendor: "amd".to_string(), name, supported, notes };
                 }
             }
 
@@ -133,6 +155,8 @@ pub fn detect_gpu() -> GpuInfo {
                 return GpuInfo {
                     vendor: vendor.to_string(),
                     name: first.trim().to_string(),
+                    supported: false,
+                    notes: "No discrete GPU detected. AI models will run on CPU, which is significantly slower.".to_string(),
                 };
             }
         }
@@ -149,12 +173,16 @@ pub fn detect_gpu() -> GpuInfo {
         return GpuInfo {
             vendor: "nvidia".to_string(),
             name: "NVIDIA GPU".to_string(),
+            supported: true,
+            notes: "NVIDIA GPU detected. Ensure CUDA drivers are up to date.".to_string(),
         };
     }
 
     GpuInfo {
         vendor: "unknown".to_string(),
         name: "Unknown GPU".to_string(),
+        supported: false,
+        notes: "No discrete GPU detected. AI models will run on CPU, which is significantly slower.".to_string(),
     }
 }
 
@@ -803,8 +831,8 @@ async fn install_comfyui(app: &AppHandle) -> Result<(), String> {
             "PyTorch DirectML (AMD)",
         ),
         _ => (
-            vec!["install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu128"],
-            "PyTorch CUDA 12.8 (NVIDIA)",
+            vec!["install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu124"],
+            "PyTorch CUDA 12.4 (NVIDIA)",
         ),
     };
 
@@ -1239,6 +1267,68 @@ async fn install_comfyui_torch(app: &AppHandle) -> Result<(), String> {
 // =============================================================================
 // Tauri commands
 // =============================================================================
+
+#[tauri::command]
+pub fn detect_gpu_info() -> GpuInfo {
+    detect_gpu()
+}
+
+#[tauri::command]
+pub async fn check_ollama_gpu_usage() -> Result<OllamaGpuStatus, String> {
+    let ollama = match find_ollama_binary() {
+        Some(p) => p,
+        None => return Ok(OllamaGpuStatus {
+            using_gpu: false,
+            processor_info: "Ollama not found".to_string(),
+            raw_output: String::new(),
+        }),
+    };
+
+    let out = match Command::new(&ollama).arg("ps").output() {
+        Ok(o) => o,
+        Err(e) => return Ok(OllamaGpuStatus {
+            using_gpu: false,
+            processor_info: format!("Could not run ollama ps: {}", e),
+            raw_output: String::new(),
+        }),
+    };
+
+    let raw = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // ollama ps header: NAME  ID  SIZE  PROCESSOR  UNTIL
+    // Model rows contain e.g. "100% GPU" or "100% CPU" in the PROCESSOR column
+    let model_lines: Vec<&str> = raw.lines().skip(1).filter(|l| !l.trim().is_empty()).collect();
+
+    if model_lines.is_empty() {
+        return Ok(OllamaGpuStatus {
+            using_gpu: false,
+            processor_info: "No model currently loaded".to_string(),
+            raw_output: raw,
+        });
+    }
+
+    // Find the "%" token and the word after it (GPU or CPU)
+    let mut processor_info = String::new();
+    for line in &model_lines {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        for (i, part) in parts.iter().enumerate() {
+            if part.contains('%') {
+                if let Some(next) = parts.get(i + 1) {
+                    processor_info = format!("{} {}", part, next);
+                    break;
+                }
+            }
+        }
+        if !processor_info.is_empty() { break; }
+    }
+    if processor_info.is_empty() {
+        processor_info = model_lines.first().map(|l| l.trim().to_string()).unwrap_or_default();
+    }
+
+    let using_gpu = processor_info.to_uppercase().contains("GPU");
+
+    Ok(OllamaGpuStatus { using_gpu, processor_info, raw_output: raw })
+}
 
 #[tauri::command]
 pub async fn check_setup_status(app: AppHandle) -> Result<SetupStatus, String> {

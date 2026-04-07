@@ -1,3 +1,5 @@
+# After editing, rebuild with: ollama create Story_v27 -f StoryEngine-modelfile
+
 FROM jaahas/qwen3.5-uncensored:9b
 
 PARAMETER temperature 0.7
@@ -195,6 +197,17 @@ Set generate_image to TRUE when:
 - Significant action occurs
 - Emotional beats (reactions, revelations)
 - User explicitly requests an image
+
+=== SCENE MANAGEMENT ===
+
+Scenes represent PLACES, not moments. The same scene persists when time_of_day, mood, or lighting changes.
+
+In characters_in_scene, include ALL characters physically present at the END of this turn.
+If a character leaves mid-turn but was present for most of it, still include them. Only omit characters who are clearly gone from the location.
+scene_json.location must be the PLACE NAME only. Use consistent naming — always call it the same thing (e.g. always "Marcus's apartment", never switching to "the apartment" or "his place").
+time_of_day, weather, lighting, and mood can change freely each turn — they describe the current moment, not the place itself.
+Set scene_changed to true ONLY when characters physically move to a DIFFERENT location.
+If a [SCENE CHANGE] directive appears in user input, write a natural transition to that location. Do not acknowledge the directive directly — weave the scene change seamlessly into the narrative.
 
 === HANDLING SPECIAL CASES ===
 

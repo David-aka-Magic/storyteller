@@ -1,8 +1,8 @@
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
-  import { checkSetupStatus, installDependency } from '$lib/api/setup';
+  import { checkSetupStatus, installDependency, checkOllamaGpuUsage } from '$lib/api/setup';
   import { getConfig, updateConfig } from '$lib/api/config';
-  import type { SetupStatus, SetupProgress, DependencyStatus, GpuInfo } from '$lib/types/setup';
+  import type { SetupStatus, SetupProgress, DependencyStatus, GpuInfo, OllamaGpuStatus } from '$lib/types/setup';
   import DependencyItem from './DependencyItem.svelte';
 
   let { oncomplete }: { oncomplete?: () => void } = $props();
@@ -50,7 +50,8 @@
   ];
 
   // ── State ─────────────────────────────────────────────────────────────────
-  let setupStatus  = $state<SetupStatus | null>(null);
+  let setupStatus     = $state<SetupStatus | null>(null);
+  let ollamaGpuStatus = $state<OllamaGpuStatus | null>(null);
   let isChecking   = $state(true);
   let isInstalling = $state(false);
   let currentStep  = $state('');      // dep name being installed right now
@@ -124,7 +125,10 @@
   async function doCheck() {
     isChecking = true;
     try {
-      setupStatus = await checkSetupStatus();
+      [setupStatus, ollamaGpuStatus] = await Promise.all([
+        checkSetupStatus(),
+        checkOllamaGpuUsage().catch(() => null),
+      ]);
       // Auto-select all missing on first load; preserve selection on rechecks
       if (selected.size === 0 && setupStatus) {
         const missing = [
@@ -244,10 +248,20 @@
   {#if setupStatus}
     {@const gpu = setupStatus.gpu_info}
     <div class="gpu-badge gpu-{gpu.vendor}">
-      {#if gpu.vendor === 'nvidia'}🟢{:else if gpu.vendor === 'amd'}🔴{:else}⚪{/if}
-      GPU: {gpu.name}
-      {#if gpu.vendor === 'amd'}<span class="gpu-note">→ DirectML mode</span>{/if}
-      {#if gpu.vendor === 'nvidia'}<span class="gpu-note">→ CUDA mode</span>{/if}
+      <div class="gpu-badge-row">
+        {#if gpu.vendor === 'nvidia'}🟢{:else if gpu.vendor === 'amd'}🔴{:else}⚪{/if}
+        GPU: {gpu.name}
+        {#if gpu.vendor === 'amd'}<span class="gpu-note">→ DirectML mode</span>{/if}
+        {#if gpu.vendor === 'nvidia'}<span class="gpu-note">→ CUDA mode</span>{/if}
+        {#if ollamaGpuStatus}
+          <span class="gpu-note gpu-ollama-status">
+            · Ollama: {ollamaGpuStatus.using_gpu ? '⚡ GPU' : '🐌 CPU'} ({ollamaGpuStatus.processor_info})
+          </span>
+        {/if}
+      </div>
+      {#if gpu.vendor === 'amd' && ollamaGpuStatus && !ollamaGpuStatus.using_gpu && ollamaGpuStatus.processor_info !== 'No model currently loaded' && ollamaGpuStatus.processor_info !== 'Ollama not found'}
+        <div class="gpu-rocm-warning">{gpu.notes}</div>
+      {/if}
     </div>
   {/if}
 
@@ -401,17 +415,34 @@
     padding: 6px 40px;
     font-size: 0.78rem;
     display: flex;
-    align-items: center;
-    gap: 6px;
+    flex-direction: column;
+    gap: 4px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-primary);
     color: var(--text-secondary);
+  }
+
+  .gpu-badge-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .gpu-note {
     font-size: 0.72rem;
     color: var(--text-muted);
     margin-left: 4px;
+  }
+
+  .gpu-ollama-status {
+    margin-left: 8px;
+  }
+
+  .gpu-rocm-warning {
+    font-size: 0.72rem;
+    color: var(--accent-danger);
+    padding: 4px 0 2px;
+    line-height: 1.4;
   }
 
   /* ── Dep list ── */

@@ -136,9 +136,9 @@ impl ServiceManager {
         Ok(())
     }
 
-    /// Start ComfyUI if not already running.
+    /// Start ComfyUI from an explicit path.
     /// Supports the Windows standalone (embedded Python) layout and venv layouts.
-    pub fn start_comfyui(&self) -> Result<(), String> {
+    pub fn start_comfyui_at(&self, path: &PathBuf) -> Result<(), String> {
         let mut process = self.comfyui_process.lock().map_err(|e| e.to_string())?;
 
         if process.is_some() {
@@ -146,12 +146,12 @@ impl ServiceManager {
         }
 
         // Windows standalone build: python_embeded\python.exe + ComfyUI\main.py
-        let embedded_python = self.comfyui_path.join("python_embeded").join("python.exe");
-        let standalone_main = self.comfyui_path.join("ComfyUI").join("main.py");
+        let embedded_python = path.join("python_embeded").join("python.exe");
+        let standalone_main = path.join("ComfyUI").join("main.py");
 
         // venv build: venv\Scripts\python.exe + main.py
-        let venv_python = self.comfyui_path.join("venv").join("Scripts").join("python.exe");
-        let venv_main = self.comfyui_path.join("main.py");
+        let venv_python = path.join("venv").join("Scripts").join("python.exe");
+        let venv_main = path.join("main.py");
 
         let (python_cmd, main_py, standalone) = if embedded_python.exists() && standalone_main.exists() {
             (embedded_python, standalone_main, true)
@@ -160,7 +160,7 @@ impl ServiceManager {
         } else {
             return Err(format!(
                 "ComfyUI not found at: {:?}\nExpected python_embeded\\python.exe + ComfyUI\\main.py (standalone) or venv\\Scripts\\python.exe + main.py (venv)",
-                self.comfyui_path
+                path
             ));
         };
 
@@ -174,9 +174,17 @@ impl ServiceManager {
         if standalone {
             cmd.arg("--windows-standalone-build");
         }
-        cmd.current_dir(&self.comfyui_path)
-           .stdout(Stdio::null())
-           .stderr(Stdio::null());
+        // Use a log file instead of Stdio::null() — on Windows, ComfyUI's logger
+        // calls flush() on the null stderr handle which raises OSError (errno 22).
+        let log_stdio = || std::fs::OpenOptions::new()
+            .create(true).append(true).write(true)
+            .open(path.join("comfyui.log"))
+            .map(Stdio::from)
+            .unwrap_or_else(|_| Stdio::null());
+
+        cmd.current_dir(path)
+           .stdout(log_stdio())
+           .stderr(log_stdio());
 
         let child = cmd.spawn()
             .map_err(|e| format!("Failed to start ComfyUI: {}", e))?;
@@ -186,8 +194,13 @@ impl ServiceManager {
         Ok(())
     }
 
-    /// Start all services, checking if they're already running first
-    pub async fn start_all(&self) -> Result<ServiceStatus, String> {
+    pub fn start_comfyui(&self) -> Result<(), String> {
+        self.start_comfyui_at(&self.comfyui_path.clone())
+    }
+
+    /// Start all services, checking if they're already running first.
+    /// `comfyui_path_override` is used instead of the cached path (allows runtime config changes).
+    pub async fn start_all(&self, comfyui_path_override: PathBuf) -> Result<ServiceStatus, String> {
         let mut status = ServiceStatus::default();
 
         // Check and start Ollama
@@ -206,11 +219,11 @@ impl ServiceManager {
             }
         }
 
-        // Check and start SD
+        // Check and start SD (skip entirely if no path configured)
         if Self::is_sd_running().await {
             status.sd = ServiceState::AlreadyRunning;
             println!("[ServiceManager] Stable Diffusion already running");
-        } else {
+        } else if !self.sd_path.as_os_str().is_empty() {
             match self.start_sd() {
                 Ok(_) => {
                     status.sd = ServiceState::Started;
@@ -221,12 +234,12 @@ impl ServiceManager {
             }
         }
 
-        // Check and start ComfyUI
+        // Check and start ComfyUI — use the override path (reads current config, not startup cache)
         if Self::is_comfyui_running().await {
             status.comfyui = ServiceState::AlreadyRunning;
             println!("[ServiceManager] ComfyUI already running");
-        } else if !self.comfyui_path.as_os_str().is_empty() {
-            match self.start_comfyui() {
+        } else if !comfyui_path_override.as_os_str().is_empty() {
+            match self.start_comfyui_at(&comfyui_path_override) {
                 Ok(_) => {
                     status.comfyui = ServiceState::Started;
                 }
@@ -291,7 +304,8 @@ pub enum ServiceState {
 
 // Tauri commands for service management
 
-use tauri::State;
+use tauri::{AppHandle, State};
+use crate::config::AppConfig;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -321,8 +335,11 @@ pub async fn check_services_status() -> Result<ServiceStatusResponse, String> {
 }
 
 #[tauri::command]
-pub async fn start_services(state: State<'_, ServiceManager>) -> Result<ServiceStatusResponse, String> {
-    let status = state.start_all().await?;
+pub async fn start_services(app: AppHandle, state: State<'_, ServiceManager>) -> Result<ServiceStatusResponse, String> {
+    // Read config fresh so path changes saved in Settings take effect without restart
+    let config = AppConfig::load(&app);
+    let comfyui_path = PathBuf::from(&config.comfyui_path);
+    let status = state.start_all(comfyui_path).await?;
 
     let ollama_error = match &status.ollama {
         ServiceState::Failed(e) => Some(e.clone()),

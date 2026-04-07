@@ -580,3 +580,21 @@ export function contextStatus(estimatedTokens: number): 'ok' | 'warning' | 'crit
   if (usage < COMPRESSION_THRESHOLD) return 'warning';
   return 'critical';
 }
+
+// ============================================================================
+// CUSTOM ASSETS (user-added checkpoints & poses)
+// ============================================================================
+
+export interface CustomCheckpoint {
+  id: number;
+  display_name: string;
+  filename: string;
+  created_at: string;
+}
+
+export interface CustomPose {
+  id: number;
+  display_name: string;
+  filename: string;
+  created_at: string;
+}

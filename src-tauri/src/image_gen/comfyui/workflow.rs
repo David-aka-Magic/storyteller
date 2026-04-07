@@ -110,7 +110,9 @@ pub(super) fn build_workflow_modifications(
          masculine features, strong jawline, cleft chin, square jaw, \
          angular face, manly, \
          standing when should be sitting, standing when should be lying down, \
-         stiff pose, t-pose, a-pose, mannequin pose"
+         stiff pose, t-pose, a-pose, mannequin pose, \
+         (blurry eyes:1.4), (unfocused eyes:1.3), (glossy eyes:1.2), \
+         (plastic skin:1.3), (waxy skin:1.2), (airbrushed:1.3), (smooth skin:1.2)"
     );
     let mut neg_inputs = HashMap::new();
     neg_inputs.insert("text".to_string(), Value::String(neg_text.to_string()));
@@ -144,6 +146,10 @@ pub(super) fn build_workflow_modifications(
             ksampler_inputs.insert("cfg".to_string(), Value::Number(n));
         }
     }
+    // Always set sampler and scheduler for consistent quality.
+    // dpmpp_2m_sde + karras produces the sharpest facial detail with JuggernautXL.
+    ksampler_inputs.insert("sampler_name".to_string(), Value::String("dpmpp_2m_sde".to_string()));
+    ksampler_inputs.insert("scheduler".to_string(), Value::String("karras".to_string()));
     if !ksampler_inputs.is_empty() {
         mods.insert("35".to_string(), ksampler_inputs);
     }
@@ -253,6 +259,82 @@ pub(super) fn inject_controlnet(
     println!(
         "[ComfyUI] Injected ControlNet nodes (60,61,62): skeleton={}, strength={}",
         skeleton_filename, strength
+    );
+    Ok(())
+}
+
+// ============================================================================
+// HIRES FIX INJECTION
+// ============================================================================
+
+/// Inject a hi-res fix (latent upscale + second sampling pass) into the workflow.
+///
+/// This mimics A1111's "Hires. fix" feature:
+///   Node "70" — LatentUpscaleBy: upscales the first-pass latent by `upscale_factor`
+///   Node "71" — KSampler: re-denoises the upscaled latent at low denoise strength
+///
+/// Rewires the VAEDecode (node "6") to read from the second KSampler instead of the first.
+/// The second pass inherits the same model and conditioning sources as the first KSampler.
+pub(super) fn inject_hires_fix(
+    workflow: &mut Value,
+    upscale_factor: f64,
+    denoise_strength: f64,
+    hires_steps: u32,
+) -> Result<(), ComfyError> {
+    let obj = workflow
+        .as_object_mut()
+        .ok_or_else(|| ComfyError::WorkflowLoadFailed("Workflow root is not an object".into()))?;
+
+    // Determine what the first KSampler's positive/negative sources are.
+    // If ControlNet was injected, KSampler "35" reads from ["62", 0/1].
+    // Otherwise it reads from ["2", 0] and ["3", 0].
+    let (pos_source, neg_source) = if let Some(node_35) = obj.get("35") {
+        let pos = node_35.pointer("/inputs/positive").cloned().unwrap_or(serde_json::json!(["2", 0]));
+        let neg = node_35.pointer("/inputs/negative").cloned().unwrap_or(serde_json::json!(["3", 0]));
+        (pos, neg)
+    } else {
+        (serde_json::json!(["2", 0]), serde_json::json!(["3", 0]))
+    };
+
+    // Node 70: LatentUpscaleBy — upscale the first-pass latent output
+    obj.insert("70".to_string(), serde_json::json!({
+        "class_type": "LatentUpscaleBy",
+        "inputs": {
+            "samples": ["35", 0],
+            "upscale_method": "bilinear",
+            "scale_by": upscale_factor
+        }
+    }));
+
+    // Node 71: Second KSampler — re-denoise the upscaled latent
+    obj.insert("71".to_string(), serde_json::json!({
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["1", 0],
+            "positive": pos_source,
+            "negative": neg_source,
+            "latent_image": ["70", 0],
+            "seed": -1,
+            "steps": hires_steps,
+            "cfg": 5.5,
+            "sampler_name": "dpmpp_2m_sde",
+            "scheduler": "karras",
+            "denoise": denoise_strength
+        }
+    }));
+
+    // Rewire VAEDecode (node "6") to read from the second KSampler
+    if let Some(node_6) = obj.get_mut("6") {
+        if let Some(inputs) = node_6.get_mut("inputs") {
+            if let Some(samples) = inputs.get_mut("samples") {
+                *samples = serde_json::json!(["71", 0]);
+            }
+        }
+    }
+
+    println!(
+        "[ComfyUI] Injected hires fix: scale={}x, denoise={}, steps={}",
+        upscale_factor, denoise_strength, hires_steps
     );
     Ok(())
 }

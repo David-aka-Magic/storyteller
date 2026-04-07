@@ -19,6 +19,14 @@ export interface GpuInfo {
   /** "nvidia" | "amd" | "intel" | "unknown" */
   vendor: string;
   name: string;
+  supported: boolean;
+  notes: string;
+}
+
+export interface OllamaGpuStatus {
+  using_gpu: boolean;
+  processor_info: string;
+  raw_output: string;
 }
 
 export interface SetupStatus {

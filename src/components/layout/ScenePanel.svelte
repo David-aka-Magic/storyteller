@@ -268,18 +268,21 @@
               {#each sceneCharacters as char (char.id)}
                 {@const portrait = portraitUrls.get(char.id) ?? null}
                 <div class="char-tile in-scene">
-                  <button
-                    class="char-portrait"
-                    onclick={() => toggleCharacterInScene(char.id)}
-                    title="Remove from scene"
-                  >
-                    {#if portrait}
-                      <img src={portrait} alt={char.name} />
-                    {:else}
-                      <span class="initials">{initials(char.name)}</span>
-                    {/if}
-                    <span class="scene-badge">✓</span>
-                  </button>
+                  <div class="char-portrait-wrap">
+                    <div class="char-portrait in-scene-portrait">
+                      {#if portrait}
+                        <img src={portrait} alt={char.name} />
+                      {:else}
+                        <span class="initials">{initials(char.name)}</span>
+                      {/if}
+                      <span class="scene-badge">✓</span>
+                    </div>
+                    <button
+                      class="remove-from-scene-btn"
+                      onclick={() => toggleCharacterInScene(char.id)}
+                      title="Remove from scene"
+                    >×</button>
+                  </div>
                   <span class="char-name">
                     {char.name}
                     {#if char.content_rating === 'nsfw'}<span class="nsfw-pip" title="NSFW"></span>{/if}
@@ -623,6 +626,46 @@
   }
   .char-portrait:hover:not(.static) { border-color: var(--accent-primary); }
   .in-scene .char-portrait { border-color: var(--accent-primary); }
+
+  /* In-scene tile: wrapper for portrait + remove button */
+  .char-portrait-wrap {
+    position: relative;
+    width: 60px;
+    height: 60px;
+  }
+
+  .in-scene-portrait {
+    width: 100%;
+    height: 100%;
+    cursor: default;
+  }
+
+  .remove-from-scene-btn {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-secondary);
+    font-size: 0.75em;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s, color 0.15s;
+  }
+  .char-tile:hover .remove-from-scene-btn { opacity: 1; }
+  .remove-from-scene-btn:hover {
+    background: var(--accent-danger, #f85149);
+    border-color: var(--accent-danger, #f85149);
+    color: white;
+  }
 
   /* Non-interactive portrait (story cast when no scene active) */
   .char-portrait.static {

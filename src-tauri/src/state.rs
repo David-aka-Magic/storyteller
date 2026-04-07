@@ -324,5 +324,32 @@ impl OllamaState {
         // =====================================================================
         // Adds session-tracking columns to story_premises (safe to run repeatedly)
         crate::commands::story::run_migrations(pool).await;
+
+        // =====================================================================
+        // CUSTOM ASSETS TABLES
+        // =====================================================================
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS custom_checkpoints (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL,
+                filename     TEXT NOT NULL,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create custom_checkpoints table");
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS custom_poses (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL,
+                filename     TEXT NOT NULL,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create custom_poses table");
     }
 }

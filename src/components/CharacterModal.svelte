@@ -21,7 +21,8 @@
   import { generateMasterPortrait, generateCharacterPortrait, saveMasterPortrait } from '$lib/api/image-gen';
   import { updateCharacter, addCharacter } from '$lib/api/character';
   import { getConfig } from '$lib/api/config';
-  import type { CharacterProfile } from '../lib/types';
+  import { listCustomCheckpoints, addCustomCheckpoint, scanAvailableCheckpoints } from '$lib/api/custom-assets';
+  import type { CharacterProfile, CustomCheckpoint } from '../lib/types';
   import ImageLightbox from './shared/ImageLightbox.svelte';
 
   // ── Svelte 5 props ──
@@ -85,6 +86,13 @@
 
   let form = $state<CharacterProfile>(getEmptyForm());
 
+  let customCheckpoints = $state<CustomCheckpoint[]>([]);
+  let showAddCheckpoint = $state(false);
+  let newCheckpointName = $state('');
+  let availableCheckpointFiles = $state<string[]>([]);
+  let selectedCheckpointFile = $state('');
+  let addingCheckpoint = $state(false);
+
   // ── Open/close reactivity ──
   let wasShown = $state(false);
 
@@ -107,10 +115,58 @@
       selectedIndex = -1;
       generationError = '';
       showPromptEditor = false;
+      // Load custom checkpoints
+      listCustomCheckpoints().then(cps => { customCheckpoints = cps; }).catch(() => {});
     } else if (!show && wasShown) {
       wasShown = false;
     }
   });
+
+  $effect(() => {
+    if (form.art_style === '__add_checkpoint__') {
+      form.art_style = 'Realistic';
+      openAddCheckpoint();
+    }
+  });
+
+  // ── Custom checkpoint helpers ──
+  function isCustomCheckpoint(style: string): boolean {
+    return style.startsWith('custom:');
+  }
+
+  function getCheckpointFilename(style: string): string | null {
+    if (!isCustomCheckpoint(style)) return null;
+    const cp = customCheckpoints.find(c => `custom:${c.display_name}` === style);
+    return cp?.filename ?? null;
+  }
+
+  async function openAddCheckpoint() {
+    showAddCheckpoint = true;
+    newCheckpointName = '';
+    selectedCheckpointFile = '';
+    try {
+      availableCheckpointFiles = await scanAvailableCheckpoints();
+      const registered = new Set(customCheckpoints.map(c => c.filename));
+      availableCheckpointFiles = availableCheckpointFiles.filter(f => !registered.has(f));
+    } catch {
+      availableCheckpointFiles = [];
+    }
+  }
+
+  async function confirmAddCheckpoint() {
+    if (!newCheckpointName.trim() || !selectedCheckpointFile) return;
+    addingCheckpoint = true;
+    try {
+      const cp = await addCustomCheckpoint(newCheckpointName.trim(), selectedCheckpointFile);
+      customCheckpoints = [...customCheckpoints, cp];
+      form.art_style = `custom:${cp.display_name}`;
+      showAddCheckpoint = false;
+      generateSdPrompt();
+    } catch (e) {
+      console.error('Failed to add checkpoint:', e);
+    }
+    addingCheckpoint = false;
+  }
 
   // ── Prompt builder (matches master_portrait.rs logic) ──
   function generateSdPrompt() {
@@ -192,9 +248,10 @@
 
     if (!form.sd_prompt) generateSdPrompt();
 
-    // Try ComfyUI first (batch of 4), then fall back to SD WebUI (single image)
-    // No pre-check — just try and let the actual request tell us if it works
     try {
+      const checkpointOverride = isCustomCheckpoint(form.art_style ?? '')
+        ? getCheckpointFilename(form.art_style ?? '')
+        : null;
       const result = await generateMasterPortrait({
         name: form.name,
         age: form.age || null,
@@ -210,21 +267,18 @@
         art_style: form.art_style || null,
         custom_prompt: showPromptEditor ? form.sd_prompt : null,
         seed: null,
+        checkpoint_override: checkpointOverride,
       });
 
       generatedImages = result.images_base64;
       generatedPaths = result.image_paths;
       form.sd_prompt = result.prompt_used;
       form.seed = result.seed !== -1 ? result.seed : undefined;
-      isGenerating = false;
-      return;
     } catch (e) {
-      console.warn('[CharacterModal] ComfyUI failed, trying SD fallback:', e);
+      generationError = `Image generation failed.\n\nMake sure ComfyUI is running (check http://127.0.0.1:8188).\n\nDetails: ${e}`;
+    } finally {
+      isGenerating = false;
     }
-
-    // SD WebUI fallback — single image
-    await fallbackSingleGenerate();
-    isGenerating = false;
   }
 
   // ── Single-image generation via SD WebUI API ──
@@ -439,7 +493,44 @@
           {#each styles as style}
             <option value={style}>{style}</option>
           {/each}
+          {#if customCheckpoints.length > 0}
+            <option disabled>──────────</option>
+            {#each customCheckpoints as cp}
+              <option value="custom:{cp.display_name}">{cp.display_name}</option>
+            {/each}
+          {/if}
+          <option disabled>──────────</option>
+          <option value="__add_checkpoint__">+ Add Checkpoint…</option>
         </select>
+
+        {#if showAddCheckpoint}
+          <div class="add-checkpoint-form">
+            {#if availableCheckpointFiles.length === 0}
+              <small class="add-cp-hint">No new .safetensors files found in ComfyUI/models/checkpoints/. Place your checkpoint file there first, then try again.</small>
+              <button class="link-btn" onclick={() => showAddCheckpoint = false}>Cancel</button>
+            {:else}
+              <div class="add-cp-field">
+                <label>Display Name</label>
+                <input type="text" bind:value={newCheckpointName} placeholder="e.g. DreamShaper XL" />
+              </div>
+              <div class="add-cp-field">
+                <label>Checkpoint File</label>
+                <select bind:value={selectedCheckpointFile}>
+                  <option value="">Select a file…</option>
+                  {#each availableCheckpointFiles as f}
+                    <option value={f}>{f}</option>
+                  {/each}
+                </select>
+              </div>
+              <div class="add-cp-actions">
+                <button class="link-btn" onclick={() => showAddCheckpoint = false}>Cancel</button>
+                <button class="accent-btn" onclick={confirmAddCheckpoint} disabled={addingCheckpoint || !newCheckpointName.trim() || !selectedCheckpointFile}>
+                  {addingCheckpoint ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
 
         <!-- Content Rating toggle -->
         <div class="rating-row">
@@ -851,4 +942,64 @@
   }
   .save:hover { background: #357abd; }
   .cancel:hover { background: #5a6268; }
+
+  .add-checkpoint-form {
+    margin-top: 8px;
+    padding: 10px;
+    background: var(--bg-tertiary, #21262d);
+    border: 1px solid var(--border-secondary, #30363d);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .add-cp-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .add-cp-field label {
+    font-size: 0.75rem;
+    color: var(--text-muted, #8b949e);
+  }
+
+  .add-cp-field input,
+  .add-cp-field select {
+    padding: 6px 8px;
+    background: var(--bg-primary, #0d1117);
+    border: 1px solid var(--border-secondary, #30363d);
+    border-radius: 6px;
+    color: var(--text-primary, #c9d1d9);
+    font-size: 0.85rem;
+  }
+
+  .add-cp-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 4px;
+  }
+
+  .accent-btn {
+    padding: 5px 14px;
+    background: var(--accent-primary, #58a6ff);
+    color: var(--text-inverse, #0d1117);
+    border: none;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .accent-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .add-cp-hint {
+    color: var(--text-muted, #8b949e);
+    font-size: 0.78rem;
+  }
 </style>

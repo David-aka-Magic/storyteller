@@ -5,6 +5,7 @@
 
 mod commands;
 mod config;
+mod custom_assets;
 mod image_gen;
 mod models;
 mod services;
@@ -217,6 +218,19 @@ fn main() {
             services::setup::check_setup_status,
             services::setup::install_dependency,
             services::setup::install_all_dependencies,
+            services::setup::detect_gpu_info,
+            services::setup::check_ollama_gpu_usage,
+            // Custom assets (checkpoints + poses)
+            custom_assets::scan_available_checkpoints,
+            custom_assets::list_custom_checkpoints,
+            custom_assets::add_custom_checkpoint,
+            custom_assets::delete_custom_checkpoint,
+            custom_assets::scan_available_poses,
+            custom_assets::list_custom_poses,
+            custom_assets::add_custom_pose,
+            custom_assets::delete_custom_pose,
+            custom_assets::import_pose_file,
+            custom_assets::import_checkpoint_file,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")

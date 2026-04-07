@@ -5,7 +5,19 @@
 // Extracted from main.rs setup closure to keep startup lean.
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use super::ServiceManager;
+
+/// Open (or create) comfyui.log in the given directory and return a Stdio from it.
+/// Falls back to Stdio::null() if the file can't be opened.
+/// Called twice per launch (once for stdout, once for stderr) — each call opens a fresh handle.
+fn comfyui_log_stdio(comfyui_path: &PathBuf) -> Stdio {
+    std::fs::OpenOptions::new()
+        .create(true).append(true).write(true)
+        .open(comfyui_path.join("comfyui.log"))
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null())
+}
 
 pub struct StartedServices {
     pub ollama_pid: Option<u32>,
@@ -115,16 +127,16 @@ pub async fn auto_start_services(sd_path: PathBuf, comfyui_path: PathBuf) -> Sta
                     .arg("--windows-standalone-build")
                     .current_dir(&comfyui_path)
                     .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
+                    .stdout(comfyui_log_stdio(&comfyui_path))
+                    .stderr(comfyui_log_stdio(&comfyui_path))
                     .spawn()
             } else if venv_python.exists() && venv_main.exists() {
                 std::process::Command::new(&venv_python)
                     .arg(&venv_main)
                     .current_dir(&comfyui_path)
                     .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
+                    .stdout(comfyui_log_stdio(&comfyui_path))
+                    .stderr(comfyui_log_stdio(&comfyui_path))
                     .spawn()
             } else {
                 println!("[Startup] ComfyUI not found at {:?}", comfyui_path);

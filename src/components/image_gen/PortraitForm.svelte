@@ -1,5 +1,8 @@
 <!-- src/components/image_gen/PortraitForm.svelte — Character detail form + SD prompt preview -->
 <script lang="ts">
+  import { listCustomCheckpoints, addCustomCheckpoint, scanAvailableCheckpoints } from '$lib/api/custom-assets';
+  import type { CustomCheckpoint } from '$lib/types';
+
   const styles    = ['Realistic', 'Anime', '3D', 'Painting', 'Sketch'];
   const bodyTypes = ['Slim', 'Athletic', 'Average', 'Curvy', 'Muscular', 'Heavyset'];
   const genders   = ['Male', 'Female', 'Non-Binary', 'Other'];
@@ -23,6 +26,51 @@
   } = $props();
 
   let showPromptEditor = $state(false);
+  let customCheckpoints = $state<CustomCheckpoint[]>([]);
+  let showAddCheckpoint = $state(false);
+  let newCheckpointName = $state('');
+  let availableCheckpointFiles = $state<string[]>([]);
+  let selectedCheckpointFile = $state('');
+  let addingCheckpoint = $state(false);
+
+  $effect(() => {
+    listCustomCheckpoints().then(cps => { customCheckpoints = cps; }).catch(() => {});
+  });
+
+  $effect(() => {
+    if (form.art_style === '__add_checkpoint__') {
+      form.art_style = 'Realistic';
+      openAddCheckpoint();
+    }
+  });
+
+  async function openAddCheckpoint() {
+    showAddCheckpoint = true;
+    newCheckpointName = '';
+    selectedCheckpointFile = '';
+    try {
+      availableCheckpointFiles = await scanAvailableCheckpoints();
+      const registered = new Set(customCheckpoints.map(c => c.filename));
+      availableCheckpointFiles = availableCheckpointFiles.filter(f => !registered.has(f));
+    } catch {
+      availableCheckpointFiles = [];
+    }
+  }
+
+  async function confirmAddCheckpoint() {
+    if (!newCheckpointName.trim() || !selectedCheckpointFile) return;
+    addingCheckpoint = true;
+    try {
+      const cp = await addCustomCheckpoint(newCheckpointName.trim(), selectedCheckpointFile);
+      customCheckpoints = [...customCheckpoints, cp];
+      form.art_style = `custom:${cp.display_name}`;
+      showAddCheckpoint = false;
+      onchange?.();
+    } catch (e) {
+      console.error('Failed to add checkpoint:', e);
+    }
+    addingCheckpoint = false;
+  }
 </script>
 
 <div class="form-panel">
@@ -79,7 +127,44 @@
         {#each styles as s}
           <option value={s}>{s}</option>
         {/each}
+        {#if customCheckpoints.length > 0}
+          <option disabled>──────────</option>
+          {#each customCheckpoints as cp}
+            <option value="custom:{cp.display_name}">{cp.display_name}</option>
+          {/each}
+        {/if}
+        <option disabled>──────────</option>
+        <option value="__add_checkpoint__">+ Add Checkpoint…</option>
       </select>
+
+      {#if showAddCheckpoint}
+        <div class="add-checkpoint-form">
+          {#if availableCheckpointFiles.length === 0}
+            <small class="add-cp-hint">No new .safetensors files found in ComfyUI/models/checkpoints/. Place your checkpoint file there first, then try again.</small>
+            <button class="link-btn" onclick={() => showAddCheckpoint = false}>Cancel</button>
+          {:else}
+            <div class="add-cp-field">
+              <label>Display Name</label>
+              <input type="text" bind:value={newCheckpointName} placeholder="e.g. DreamShaper XL" />
+            </div>
+            <div class="add-cp-field">
+              <label>Checkpoint File</label>
+              <select bind:value={selectedCheckpointFile}>
+                <option value="">Select a file…</option>
+                {#each availableCheckpointFiles as f}
+                  <option value={f}>{f}</option>
+                {/each}
+              </select>
+            </div>
+            <div class="add-cp-actions">
+              <button class="link-btn" onclick={() => showAddCheckpoint = false}>Cancel</button>
+              <button class="accent-btn" onclick={confirmAddCheckpoint} disabled={addingCheckpoint || !newCheckpointName.trim() || !selectedCheckpointFile}>
+                {addingCheckpoint ? 'Adding…' : 'Add'}
+              </button>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </div>
 
@@ -288,5 +373,65 @@
 
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+
+  .add-checkpoint-form {
+    margin-top: 8px;
+    padding: 10px;
+    background: var(--bg-tertiary, #21262d);
+    border: 1px solid var(--border-secondary, #30363d);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .add-cp-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .add-cp-field label {
+    font-size: 0.75rem;
+    color: var(--text-muted, #8b949e);
+  }
+
+  .add-cp-field input,
+  .add-cp-field select {
+    padding: 6px 8px;
+    background: var(--bg-primary, #0d1117);
+    border: 1px solid var(--border-secondary, #30363d);
+    border-radius: 6px;
+    color: var(--text-primary, #c9d1d9);
+    font-size: 0.85rem;
+  }
+
+  .add-cp-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 4px;
+  }
+
+  .accent-btn {
+    padding: 5px 14px;
+    background: var(--accent-primary, #58a6ff);
+    color: var(--text-inverse, #0d1117);
+    border: none;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .accent-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .add-cp-hint {
+    color: var(--text-muted, #8b949e);
+    font-size: 0.78rem;
   }
 </style>

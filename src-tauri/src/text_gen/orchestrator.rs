@@ -255,6 +255,20 @@ async fn load_scene_characters_for_context(
 /// - Matches an existing scene by location (case-insensitive).
 /// - Auto-creates a new scene if no match is found.
 /// - Syncs scene_characters from the character names in the LLM output.
+/// Normalize a location string for fuzzy matching.
+/// Strips articles, lowercases, trims whitespace, and collapses spaces.
+fn normalize_location(raw: &str) -> String {
+    let lower = raw.trim().to_lowercase();
+    // Remove leading articles
+    let stripped = lower
+        .strip_prefix("the ")
+        .or_else(|| lower.strip_prefix("a "))
+        .or_else(|| lower.strip_prefix("an "))
+        .unwrap_or(&lower);
+    // Collapse multiple spaces to single
+    stripped.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
 /// - Sets story_premises.active_scene_id.
 ///
 /// Best-effort: returns Ok(None) if story_id is None or location is empty.
@@ -270,32 +284,37 @@ async fn sync_scene_from_turn(
         return Ok(None);
     }
 
-    // 1. Try to match an existing scene by location (case-insensitive)
-    let existing = sqlx::query(
-        "SELECT s.id FROM scenes s \
+    // 1. Try to match an existing scene by normalized location
+    let normalized = normalize_location(&location);
+
+    // Load all scenes for this story and match using normalized comparison
+    let scene_rows = sqlx::query(
+        "SELECT s.id, s.location FROM scenes s \
          INNER JOIN story_scenes ss ON ss.scene_id = s.id \
-         WHERE ss.story_id = ? AND LOWER(s.location) = LOWER(?)",
+         WHERE ss.story_id = ?",
     )
     .bind(story_id)
-    .bind(&location)
-    .fetch_optional(db)
+    .fetch_all(db)
     .await
     .map_err(|e| format!("Scene lookup failed: {}", e))?;
 
+    let existing = scene_rows.iter().find(|row| {
+        let db_location: String = row.get("location");
+        normalize_location(&db_location) == normalized
+    });
+
     let scene_id: i64 = if let Some(row) = existing {
         let id: i64 = row.get("id");
-        println!("[Scene] Matched existing scene id={} for location='{}'", id, location);
+        println!("[Scene] Matched existing scene id={} for location='{}' (normalized='{}')", id, location, normalized);
         id
     } else {
         // 2. Auto-create a new scene using LLM data
         let result = sqlx::query(
-            "INSERT INTO scenes (name, location, location_type, time_of_day, mood) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO scenes (name, location, location_type) VALUES (?, ?, ?)",
         )
-        .bind(&location)           // name = location text
-        .bind(&location)           // location field
-        .bind(&scene_json.location_type)
-        .bind(&scene_json.time_of_day)
-        .bind(&scene_json.mood)
+        .bind(&location)                    // name = location text
+        .bind(&location)                    // location field
+        .bind(&scene_json.location_type)    // interior/exterior is stable
         .execute(db)
         .await
         .map_err(|e| format!("Failed to create scene: {}", e))?;
@@ -322,19 +341,15 @@ async fn sync_scene_from_turn(
         .await
         .map_err(|e| format!("Failed to set active scene: {}", e))?;
 
-    // 4. Sync scene_characters from LLM output (clear + re-populate)
-    sqlx::query("DELETE FROM scene_characters WHERE scene_id = ?")
-        .bind(scene_id)
-        .execute(db)
-        .await
-        .ok(); // best-effort
-
+    // 4. Additively sync scene_characters from LLM output.
+    //    Characters mentioned this turn are ADDED to the scene roster.
+    //    Characters are NEVER removed automatically — only via the UI.
     for name in character_names {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             continue;
         }
-        // Resolve name to character id (story-scoped first, then global fallback)
+        // Resolve name to character id (story-scoped)
         let char_row = sqlx::query(
             "SELECT c.id FROM characters c \
              INNER JOIN story_characters sc ON sc.character_id = c.id \
@@ -357,6 +372,9 @@ async fn sync_scene_from_turn(
             .execute(db)
             .await
             .ok();
+            println!("[Scene] Ensured character '{}' (id={}) in scene id={}", trimmed, char_id, scene_id);
+        } else {
+            println!("[Scene] Character '{}' not found in story roster — skipped", trimmed);
         }
     }
 
@@ -815,6 +833,13 @@ async fn generate_image_for_scene(
 
     println!("[Orchestrator] Final scene prompt: {}...", &scene_prompt[..scene_prompt.len().min(150)]);
 
+    // Prepend face quality emphasis tags — these dramatically help SDXL
+    // render clean eyes and facial features, matching A1111 defaults.
+    let scene_prompt = format!(
+        "(masterpiece, best quality:1.2), (detailed face:1.3), (detailed eyes:1.3), (sharp focus:1.1), {}",
+        scene_prompt
+    );
+
     // 6. Build the full image generation request
     let request = ImageGenRequest {
         scene_prompt,
@@ -823,8 +848,8 @@ async fn generate_image_for_scene(
         workflow_template,
         comfyui_url: None,
         seed: Some(rand::random::<i64>().abs()),
-        steps: None,
-        cfg: None,
+        steps: Some(30),
+        cfg: Some(5.5),
         width: Some(DEFAULT_IMAGE_WIDTH),
         height: Some(DEFAULT_IMAGE_HEIGHT),
         negative_prompt: Some(
@@ -1889,8 +1914,8 @@ pub async fn generate_scene_image_for_turn(
         workflow_template: workflow_path,
         comfyui_url: None,
         seed: Some(rand::random::<i64>().abs()),
-        steps: None,
-        cfg: None,
+        steps: Some(30),
+        cfg: Some(5.5),
         width: Some(scene_width),
         height: Some(scene_height),
         negative_prompt: Some(final_negative_override.unwrap_or_else(|| format!(
@@ -2056,8 +2081,8 @@ pub async fn illustrate_scene_custom(
         workflow_template: workflow_path,
         comfyui_url: None,
         seed: Some(rand::random::<i64>().abs()),
-        steps: None,
-        cfg: None,
+        steps: Some(30),
+        cfg: Some(5.5),
         width: Some(scene_width),
         height: Some(scene_height),
         negative_prompt: Some(negative_prompt),

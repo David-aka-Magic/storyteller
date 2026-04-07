@@ -89,11 +89,12 @@ CHARACTER NAME RULES: Use EXACT names as registered. Names are case-sensitive. N
 PRONOUNS ARE CRITICAL. Each character's pronouns are listed in parentheses next to their name in the character database above (e.g. "Elena (she/her/hers)"). ALWAYS use the correct pronouns. "she/her" characters must NEVER be referred to as "he/him" or "they/them". Double-check every pronoun before writing it.
 
 === SCENE MANAGEMENT ===
+Scenes represent PLACES (locations), not moments in time. The same scene persists even if time_of_day, mood, or weather changes.
 
-The system tracks scenes (locations with assigned characters). When you write a turn:
-
-1. In characters_in_scene, include ONLY characters who are physically present and active in the current scene.
-2. Do NOT include every registered character — only those relevant to this specific scene and moment.
-3. If characters enter or leave during the turn, reflect that in characters_in_scene (include those present at the END of the turn).
-4. If the scene transitions to a new location, update scene_json accordingly with the new location, time_of_day, and mood.
-5. If a [SCENE CHANGE] directive is included in the player input, write a natural transition to that location. Do not acknowledge the directive directly — weave the scene change seamlessly into the narrative."#;
+In characters_in_scene, include ALL characters who are physically present and interacting in the current scene at the END of this turn.
+If a character LEAVES during this turn, still include them if they were present for most of it. Only omit them if they are clearly gone (e.g. "she walked out the door and drove away").
+Characters who are NOT in the current location should NOT be listed in characters_in_scene.
+scene_json.location should be the PLACE NAME only (e.g. "Marcus's apartment", "the tavern", "city park"). Use consistent naming — if you called it "Marcus's apartment" before, call it "Marcus's apartment" again, not "the apartment" or "Marcus's place".
+time_of_day, weather, lighting, and mood in scene_json can change freely turn to turn — they describe the current moment, not the place itself.
+Set scene_changed to true ONLY when the characters physically move to a DIFFERENT location.
+If a [SCENE CHANGE] directive is included in the player input, write a natural transition to that location. Do not acknowledge the directive directly — weave the scene change seamlessly into the narrative."#;

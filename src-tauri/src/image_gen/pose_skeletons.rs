@@ -420,20 +420,40 @@ pub fn ensure_pose_skeletons(app_data_dir: &Path) -> Result<PathBuf, String> {
 
 /// Get the skeleton image path for a given pose name string.
 /// Falls back to `standing.png` for unrecognized values.
-pub fn get_skeleton_path_for_pose(pose: &str, skeletons_dir: &Path) -> PathBuf {
-    let normalized = pose.to_uppercase().replace('-', "_").replace(' ', "_");
-    let filename = match normalized.as_str() {
-        "STANDING" => "standing.png",
-        "SITTING" | "SEATED" => "sitting.png",
-        "LYING_DOWN" | "LYING" | "LYINGDOWN" => "lying_down.png",
-        "RUNNING" => "running.png",
-        "KNEELING" => "kneeling.png",
-        "LEANING" => "leaning.png",
-        "DRIVING" => "driving.png",
-        "COOKING" => "cooking.png",
-        "FIGHTING" => "fighting.png",
-        "WALKING" => "walking.png",
-        _ => "standing.png",
+pub fn get_skeleton_path_for_pose(pose_name: &str, skeletons_dir: &Path) -> PathBuf {
+    // Normalize to lowercase, replace spaces/hyphens with underscores
+    let normalized = pose_name.to_lowercase()
+        .replace(' ', "_")
+        .replace('-', "_");
+
+    // Check built-in poses first
+    let built_in = match normalized.as_str() {
+        "standing" => Some("standing.png"),
+        "sitting" | "seated" => Some("sitting.png"),
+        "lying_down" | "lying" | "lyingdown" => Some("lying_down.png"),
+        "running" => Some("running.png"),
+        "kneeling" => Some("kneeling.png"),
+        "leaning" => Some("leaning.png"),
+        "driving" => Some("driving.png"),
+        "cooking" => Some("cooking.png"),
+        "fighting" => Some("fighting.png"),
+        "walking" => Some("walking.png"),
+        _ => None,
     };
-    skeletons_dir.join(filename)
+
+    if let Some(filename) = built_in {
+        return skeletons_dir.join(filename);
+    }
+
+    // Check for a custom pose file matching the normalized name
+    let custom_filename = format!("{}.png", normalized);
+    let custom_path = skeletons_dir.join(&custom_filename);
+    if custom_path.exists() {
+        println!("[PoseSkeletons] Using custom pose: {}", custom_filename);
+        return custom_path;
+    }
+
+    // Fallback to standing
+    println!("[PoseSkeletons] Unknown pose '{}', falling back to standing", pose_name);
+    skeletons_dir.join("standing.png")
 }
