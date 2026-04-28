@@ -154,6 +154,13 @@ pub(super) fn build_workflow_modifications(
         mods.insert("35".to_string(), ksampler_inputs);
     }
 
+    // --- InsightFace model name (node 12: IPAdapterInsightFaceLoader) ---
+    {
+        let mut inputs = HashMap::new();
+        inputs.insert("model_name".to_string(), Value::String("buffalo_l".to_string()));
+        mods.insert("12".to_string(), inputs);
+    }
+
     // --- Character reference images (nodes 20, 21) ---
     let ref_node_ids = ["20", "21"];
     for (i, ref_filename) in uploaded_refs.iter().enumerate() {

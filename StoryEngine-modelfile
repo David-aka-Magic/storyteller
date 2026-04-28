@@ -5,7 +5,10 @@ FROM jaahas/qwen3.5-uncensored:9b
 PARAMETER temperature 0.7
 PARAMETER top_k 60
 PARAMETER top_p 0.9
-PARAMETER presence_penalty 1.5
+# Repetition tuning — presence_penalty intentionally low to preserve character names and location consistency
+PARAMETER presence_penalty 0.3
+PARAMETER repeat_last_n 128
+PARAMETER repeat_penalty 1.1
 PARAMETER num_ctx 8192
 
 TEMPLATE """<|im_start|>system

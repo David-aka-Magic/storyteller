@@ -20,8 +20,9 @@
     />
 -->
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
 
   import StoryTurn from './StoryTurn.svelte';
   import SceneHeader from './SceneHeader.svelte';
@@ -101,6 +102,9 @@
   let compressionInfo: OrchestratorCompressionInfo | null = null;
   let totalTurns = 0;
 
+  // Compression notice
+  let isCompressing = false;
+
   // Loading/error
   let isGenerating = false;
   let isGeneratingImage = false;
@@ -125,7 +129,13 @@
   }
 
   // ── Lifecycle ──
-  onMount(() => {
+  let unlistenCompressionStart: (() => void) | undefined;
+  let unlistenCompressionDone: (() => void) | undefined;
+
+  onMount(async () => {
+    unlistenCompressionStart = await listen('compression-started', () => { isCompressing = true; });
+    unlistenCompressionDone  = await listen('compression-done',    () => { isCompressing = false; });
+
     // If resuming a story with existing turns, populate from store
     const session = $currentStory;
     if (session) {
@@ -180,6 +190,11 @@
 
     // Focus input after mount
     tick().then(() => storyInputRef?.focus());
+  });
+
+  onDestroy(() => {
+    unlistenCompressionStart?.();
+    unlistenCompressionDone?.();
   });
 
   // ── Auto-scroll on new turns ──
@@ -676,6 +691,13 @@
     />
   {/if}
 
+  <!-- Compression Notice -->
+  {#if isCompressing}
+    <div class="compression-notice">
+      📖 Compressing story memory… this may take a moment
+    </div>
+  {/if}
+
   <!-- Input Area -->
   <StoryInput
     bind:this={storyInputRef}
@@ -953,6 +975,23 @@
 
   .error-dismiss:hover {
     opacity: 1;
+  }
+
+  /* ── Compression Notice ── */
+  .compression-notice {
+    text-align: center;
+    padding: 0.4rem 1rem;
+    font-size: 0.85rem;
+    color: var(--text-muted, #aaa);
+    background: var(--surface-2, rgba(255,255,255,0.04));
+    border-radius: 6px;
+    margin: 0.25rem 1rem;
+    animation: compressionPulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes compressionPulse {
+    0%, 100% { opacity: 0.6; }
+    50%       { opacity: 1.0; }
   }
 
   /* ── Bottom Meter ── */

@@ -20,14 +20,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::config::ConfigState;
 use crate::image_gen::comfyui::{self as comfyui_api, CharacterInput, ImageGenRequest};
 use crate::image_gen::masks::{self as mask_generator, MaskCharacter};
 use crate::text_gen::context::{
-    build_compressed_context, estimate_tokens, get_diagnostics, CharacterInfo,
-    CompressionDiagnostics, ConversationContext,
+    build_compressed_context, estimate_tokens, get_diagnostics, load_persisted_emotional_states,
+    CharacterInfo, CompressionDiagnostics, ConversationContext, RECENT_TURNS_TO_KEEP,
 };
 use crate::text_gen::parser::{self as llm_parser, CharacterEmotionalState, ParseStatus, ParsedTurn, SceneJson};
 use crate::text_gen::prompts::{
@@ -953,6 +953,41 @@ async fn save_turn_to_db(
     Ok(assistant_msg_id)
 }
 
+/// Persist the emotional states returned by the LLM into the DB so they
+/// survive app restarts and can be injected back into context on resume.
+async fn persist_emotional_states(
+    db: &sqlx::SqlitePool,
+    chat_id: i64,
+    states: &[crate::text_gen::parser::CharacterEmotionalState],
+) {
+    for s in states {
+        if s.name.is_empty() {
+            continue;
+        }
+        let lingering_json = serde_json::to_string(&s.lingering_emotions)
+            .unwrap_or_else(|_| "[]".to_string());
+        let _ = sqlx::query(
+            "INSERT INTO character_emotional_states
+             (chat_id, character_name, current_emotion, emotion_intensity, emotion_cause, lingering_emotions, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+             ON CONFLICT(chat_id, character_name) DO UPDATE SET
+               current_emotion  = excluded.current_emotion,
+               emotion_intensity = excluded.emotion_intensity,
+               emotion_cause    = excluded.emotion_cause,
+               lingering_emotions = excluded.lingering_emotions,
+               updated_at       = excluded.updated_at",
+        )
+        .bind(chat_id)
+        .bind(&s.name)
+        .bind(&s.current_emotion)
+        .bind(&s.emotion_intensity)
+        .bind(&s.emotion_cause)
+        .bind(&lingering_json)
+        .execute(db)
+        .await;
+    }
+}
+
 // ============================================================================
 // THE MAIN ORCHESTRATOR COMMAND
 // ============================================================================
@@ -1031,7 +1066,7 @@ pub async fn process_story_turn(
         content_instruction
     );
 
-    let message_rows = load_conversation_history(&state.db, chat_id).await?;
+    let mut message_rows = load_conversation_history(&state.db, chat_id).await?;
     let story_premise = load_story_premise(&state.db).await?;
 
     // Load current active scene (if any) to filter characters and build scene context
@@ -1087,6 +1122,153 @@ pub async fn process_story_turn(
         None
     };
 
+    // Token estimates needed for compression check (computed once, reused for diag later)
+    let system_prompt_tokens = estimate_tokens(&full_system_prompt);
+    let char_token_estimate_all = estimate_character_db_tokens(&all_characters);
+
+    // ── LLM Compression Pre-pass ──────────────────────────────────────────────
+    // Before building the context, check if compression is needed. If so, call
+    // Ollama for a high-quality LLM summary rather than the fast hint-concat path.
+    {
+        let temp_ctx = ConversationContext::from_message_pairs(&message_rows);
+        if temp_ctx.needs_compression(system_prompt_tokens, char_token_estimate_all) {
+            if let Some(summary_prompt) = temp_ctx.build_llm_summary_prompt() {
+                let _ = app.emit("compression-started", ());
+                println!("[Orchestrator] LLM compression triggered — requesting high-quality summary");
+
+                let summary_body = json!({
+                    "model": "Story_v27",
+                    "prompt": summary_prompt,
+                    "stream": false,
+                    "think": false
+                });
+
+                let llm_result = state.client
+                    .post(format!("{}/api/generate", state.base_url))
+                    .timeout(Duration::from_secs(60))
+                    .json(&summary_body)
+                    .send()
+                    .await;
+
+                match llm_result {
+                    Ok(res) => match res.json::<Value>().await {
+                        Ok(json_val) => {
+                            let summary_text = json_val["response"]
+                                .as_str()
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            if !summary_text.is_empty() {
+                                // Persist: delete old messages, insert compressed summary
+                                let recent_limit = (RECENT_TURNS_TO_KEEP * 2) as i64;
+                                let summary_content =
+                                    format!("[COMPRESSED SUMMARY]\n{}", summary_text);
+                                let persist_result: Result<(), String> = async {
+                                    let mut tx = state.db.begin().await
+                                        .map_err(|e| format!("Begin tx: {}", e))?;
+
+                                    // Remove any previous compressed summary messages
+                                    sqlx::query(
+                                        "DELETE FROM messages \
+                                         WHERE chat_id = ? AND role = 'system' \
+                                         AND content LIKE '[COMPRESSED SUMMARY]%'",
+                                    )
+                                    .bind(chat_id)
+                                    .execute(&mut *tx)
+                                    .await
+                                    .map_err(|e| format!("Delete old summaries: {}", e))?;
+
+                                    // Delete user/assistant rows older than the recent N*2
+                                    sqlx::query(
+                                        "DELETE FROM messages \
+                                         WHERE chat_id = ? \
+                                           AND (role = 'user' OR role = 'assistant') \
+                                           AND id NOT IN ( \
+                                               SELECT id FROM ( \
+                                                   SELECT id FROM messages \
+                                                   WHERE chat_id = ? \
+                                                     AND (role = 'user' OR role = 'assistant') \
+                                                   ORDER BY id DESC LIMIT ? \
+                                               ) \
+                                           )",
+                                    )
+                                    .bind(chat_id)
+                                    .bind(chat_id)
+                                    .bind(recent_limit)
+                                    .execute(&mut *tx)
+                                    .await
+                                    .map_err(|e| format!("Delete old messages: {}", e))?;
+
+                                    // Insert compressed summary as a system row at timestamp 0
+                                    // (sorts first in timestamp-ASC queries)
+                                    sqlx::query(
+                                        "INSERT INTO messages \
+                                         (chat_id, role, content, timestamp) \
+                                         VALUES (?, 'system', ?, 0)",
+                                    )
+                                    .bind(chat_id)
+                                    .bind(&summary_content)
+                                    .execute(&mut *tx)
+                                    .await
+                                    .map_err(|e| format!("Insert summary: {}", e))?;
+
+                                    tx.commit().await
+                                        .map_err(|e| format!("Commit tx: {}", e))?;
+                                    Ok(())
+                                }
+                                .await;
+
+                                match persist_result {
+                                    Ok(()) => {
+                                        println!(
+                                            "[Orchestrator] LLM compression persisted to DB \
+                                             ({} chars)",
+                                            summary_text.len()
+                                        );
+                                        // Reload so build_compressed_context sees trimmed history
+                                        match load_conversation_history(&state.db, chat_id).await {
+                                            Ok(reloaded) => message_rows = reloaded,
+                                            Err(e) => println!(
+                                                "[WARN] Failed to reload messages after compression: {}",
+                                                e
+                                            ),
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "[WARN] LLM compression DB persist failed: {} \
+                                             — falling through to hint-concat path",
+                                            e
+                                        );
+                                    }
+                                }
+                            } else {
+                                println!(
+                                    "[WARN] LLM compression returned empty summary \
+                                     — falling through to hint-concat path"
+                                );
+                            }
+                        }
+                        Err(e) => println!(
+                            "[WARN] LLM compression parse error: {} \
+                             — falling through to hint-concat path",
+                            e
+                        ),
+                    },
+                    Err(e) => println!(
+                        "[WARN] LLM compression request failed: {} \
+                         — falling through to hint-concat path",
+                        e
+                    ),
+                }
+
+                let _ = app.emit("compression-done", ());
+            }
+        }
+    }
+
+    let persisted_emotions = load_persisted_emotional_states(&state.db, chat_id).await;
+
     let mut conversation = ConversationContext::from_message_pairs(&message_rows);
 
     let assembled = build_compressed_context(
@@ -1098,9 +1280,9 @@ pub async fn process_story_turn(
         scene_context.as_deref(),
         &effective_user_input,
         max_prompt_tokens,
+        if persisted_emotions.is_empty() { None } else { Some(&persisted_emotions) },
     );
 
-    let system_prompt_tokens = estimate_tokens(&full_system_prompt);
     let char_token_estimate = estimate_character_db_tokens(&scene_characters);
     let diag = get_diagnostics(&conversation, system_prompt_tokens, char_token_estimate);
 
@@ -1231,7 +1413,7 @@ pub async fn process_story_turn(
 
     // ── Step 3: Parse the LLM output ──────────────────────────────────
 
-    let parsed = llm_parser::parse_llm_output(&response_text);
+    let mut parsed = llm_parser::parse_llm_output(&response_text);
 
     println!(
         "[Orchestrator][DEBUG] Parsed turn JSON:\n{}",
@@ -1249,6 +1431,41 @@ pub async fn process_story_turn(
         ParseStatus::Fallback => {
             let preview: String = response_text.chars().take(500).collect();
             println!("[DEBUG] Fallback response preview:\n{}", preview);
+
+            // Restore last known scene so the next turn retains location context.
+            if let Some(scene_id) = prior_active_scene_id {
+                let scene_row = sqlx::query(
+                    "SELECT location, location_type, time_of_day, mood \
+                     FROM scenes WHERE id = ?",
+                )
+                .bind(scene_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+
+                if let Some(row) = scene_row {
+                    let synthetic = SceneJson {
+                        location: row.get::<Option<String>, _>("location")
+                            .unwrap_or_default(),
+                        location_type: row.get::<Option<String>, _>("location_type")
+                            .unwrap_or_default(),
+                        time_of_day: row.get::<Option<String>, _>("time_of_day")
+                            .unwrap_or_default(),
+                        mood: row.get::<Option<String>, _>("mood")
+                            .unwrap_or_default(),
+                        weather: String::new(),
+                        lighting: String::new(),
+                    };
+                    println!(
+                        "[Orchestrator] Fallback parse — injecting last known scene '{}' \
+                         to preserve continuity",
+                        synthetic.location
+                    );
+                    parsed.turn.scene_json = Some(synthetic);
+                }
+            }
+
             (
                 "fallback".to_string(),
                 vec!["LLM output was not valid JSON; raw text was preserved".to_string()],
@@ -1263,6 +1480,12 @@ pub async fn process_story_turn(
         parsed.turn.characters_in_scene.len(),
         parsed.should_generate_image()
     );
+
+    // Persist emotional states to DB (best-effort; non-fatal on failure).
+    // Skipped only on a pure fallback where emotional_states is empty.
+    if !parsed.turn.emotional_states.is_empty() {
+        persist_emotional_states(&state.db, chat_id, &parsed.turn.emotional_states).await;
+    }
 
     // ── Step 4: Look up characters in the database ────────────────────
 

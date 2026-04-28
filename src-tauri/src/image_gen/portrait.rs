@@ -872,6 +872,7 @@ mod tests {
             eye_color: None,
             height_scale: None,
             weight_scale: None,
+            checkpoint_override: None,
         };
 
         let prompt = build_portrait_prompt(&req);

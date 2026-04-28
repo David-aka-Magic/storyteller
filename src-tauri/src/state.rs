@@ -328,6 +328,33 @@ impl OllamaState {
         // =====================================================================
         // CUSTOM ASSETS TABLES
         // =====================================================================
+        // =====================================================================
+        // EMOTIONAL STATE PERSISTENCE
+        // =====================================================================
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS character_emotional_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                character_name TEXT NOT NULL,
+                current_emotion TEXT NOT NULL DEFAULT 'neutral',
+                emotion_intensity TEXT NOT NULL DEFAULT 'low',
+                emotion_cause TEXT NOT NULL DEFAULT '',
+                lingering_emotions TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(chat_id, character_name)
+            )"
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create character_emotional_states table");
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ces_chat_id ON character_emotional_states(chat_id)"
+        )
+        .execute(pool)
+        .await
+        .ok();
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS custom_checkpoints (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -22,6 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sqlx::Row;
 
 
 // ============================================================================
@@ -143,6 +144,37 @@ fn extract_summary_hint(raw: &str) -> String {
                 if let Some(end_quote) = trimmed[1..].find('"') {
                     return trimmed[1..1 + end_quote].to_string();
                 }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Extract the location from a raw assistant response JSON.
+/// Checks ["location"], ["scene_json"]["location"], and ["story_json"]["scene_json"]["location"]
+/// in that order. Returns an empty string if not found.
+fn extract_location_from_response(text: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(text) {
+        if let Some(loc) = v.get("location").and_then(|l| l.as_str()) {
+            if !loc.is_empty() {
+                return loc.to_string();
+            }
+        }
+        if let Some(loc) = v.get("scene_json")
+            .and_then(|sj| sj.get("location"))
+            .and_then(|l| l.as_str())
+        {
+            if !loc.is_empty() {
+                return loc.to_string();
+            }
+        }
+        if let Some(loc) = v.get("story_json")
+            .and_then(|sj| sj.get("scene_json"))
+            .and_then(|sc| sc.get("location"))
+            .and_then(|l| l.as_str())
+        {
+            if !loc.is_empty() {
+                return loc.to_string();
             }
         }
     }
@@ -372,7 +404,32 @@ impl ConversationContext {
             }
         }
 
-        let new_summary = story_lines.join("\n");
+        let base_summary = story_lines.join("\n");
+
+        // Append a current-state trailer from the last compressed turn so the LLM
+        // always has an unambiguous "you are HERE now" marker even when all the full
+        // turns describing how it arrived have been compressed away.
+        let trailer = if let Some(last_turn) = turns_to_compress.last() {
+            let location = extract_location_from_response(&last_turn.assistant_response);
+            let location_str = if location.is_empty() {
+                "unknown".to_string()
+            } else {
+                location
+            };
+            let recent_event = if last_turn.summary_hint.is_empty() {
+                "unknown".to_string()
+            } else {
+                last_turn.summary_hint.clone()
+            };
+            format!(
+                "\n--- CURRENT STATE ---\nLast known location: {}\nRecent event: {}\n--- END CURRENT STATE ---",
+                location_str, recent_event
+            )
+        } else {
+            String::new()
+        };
+        let new_summary = format!("{}{}", base_summary, trailer);
+
         let compressed_ids: Vec<usize> = turns_to_compress.iter().map(|t| t.turn_number).collect();
 
         // Calculate token savings
@@ -596,6 +653,7 @@ fn assemble_prompt_string(
     recent_turns: &[StoryTurn],
     current_user_input: &str,
     scene_characters: &[CharacterInfo],
+    persisted_emotions: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
 
@@ -617,10 +675,14 @@ fn assemble_prompt_string(
         }
     }
 
-    // Inject emotional states from the last assistant response (if any)
-    let emotional_context = recent_turns.last()
+    // Prefer persisted emotional states (survive restarts); fall back to live extraction.
+    let live_emotional_context = recent_turns.last()
         .map(|t| extract_emotional_states(&t.assistant_response))
         .unwrap_or_default();
+    let emotional_context = match persisted_emotions {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => live_emotional_context,
+    };
     let emotional_block = if emotional_context.is_empty() {
         String::new()
     } else {
@@ -671,6 +733,7 @@ pub fn build_compressed_context(
     scene_context: Option<&str>,
     current_user_input: &str,
     max_prompt_tokens: usize,
+    persisted_emotions: Option<&str>,
 ) -> AssembledContext {
     // --- Step 1: Build the system prompt section ---
     let character_section = build_dual_character_section(scene_characters, all_characters);
@@ -700,7 +763,7 @@ pub fn build_compressed_context(
     let mut recent_turns: Vec<StoryTurn> = conversation.turns.clone();
     let compressed_summary = conversation.compressed.story_so_far.clone();
 
-    let mut prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters);
+    let mut prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters, persisted_emotions);
 
     // --- Step 4: Budget enforcement — trim oldest turns until prompt fits ---
     loop {
@@ -720,7 +783,7 @@ pub fn build_compressed_context(
             "[Context] Budget exceeded ({} tokens > {}), dropping turn {} to fit",
             estimated, max_prompt_tokens, removed.turn_number
         );
-        prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters);
+        prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters, persisted_emotions);
     }
 
     let estimated_tokens = estimate_tokens(&prompt);
@@ -744,6 +807,7 @@ pub fn build_compressed_chat_messages(
     story_premise: Option<&str>,
     scene_context: Option<&str>,
     current_user_input: &str,
+    persisted_emotions: Option<&str>,
 ) -> (Vec<Value>, bool) {
     let character_section = build_dual_character_section(scene_characters, all_characters);
     let scene_section = scene_context
@@ -789,10 +853,14 @@ pub fn build_compressed_chat_messages(
         }
     }
 
-    // Inject emotional states from the last assistant response (if any)
-    let emotional_context = conversation.turns.last()
+    // Prefer persisted emotional states (survive restarts); fall back to live extraction.
+    let live_emotional_context = conversation.turns.last()
         .map(|t| extract_emotional_states(&t.assistant_response))
         .unwrap_or_default();
+    let emotional_context = match persisted_emotions {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => live_emotional_context,
+    };
     let emotional_block = if emotional_context.is_empty() {
         String::new()
     } else {
@@ -816,7 +884,61 @@ pub fn build_compressed_chat_messages(
 }
 
 // ============================================================================
-// 6. LLM SUMMARIZATION HELPER
+// 6. PERSISTED EMOTIONAL STATE LOADER
+// ============================================================================
+
+/// Load the most recently persisted emotional states for all characters in
+/// this chat from the DB, formatted for injection into the LLM context.
+///
+/// Returns a multi-line string (one character per line) or an empty string
+/// if no persisted states exist yet.
+pub async fn load_persisted_emotional_states(
+    db: &sqlx::SqlitePool,
+    chat_id: i64,
+) -> String {
+    let rows = match sqlx::query(
+        "SELECT character_name, current_emotion, emotion_intensity, emotion_cause, lingering_emotions \
+         FROM character_emotional_states \
+         WHERE chat_id = ? \
+         ORDER BY character_name",
+    )
+    .bind(chat_id)
+    .fetch_all(db)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return String::new(),
+    };
+
+    if rows.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    for row in &rows {
+        let name: String = row.get("character_name");
+        let emotion: String = row.get("current_emotion");
+        let intensity: String = row.get("emotion_intensity");
+        let cause: String = row.get("emotion_cause");
+        let lingering_raw: String = row.get("lingering_emotions");
+
+        let mut line = format!("{}: {} ({}) — {}", name, emotion, intensity, cause);
+
+        // Parse lingering emotions JSON array and append if non-empty
+        if let Ok(lingering) = serde_json::from_str::<Vec<String>>(&lingering_raw) {
+            if !lingering.is_empty() {
+                line.push_str(&format!(" [also feeling: {}]", lingering.join(", ")));
+            }
+        }
+
+        lines.push(line);
+    }
+
+    lines.join("\n")
+}
+
+// ============================================================================
+// 7. LLM SUMMARIZATION HELPER
 // ============================================================================
 
 /// Call Ollama to produce a high-quality summary of older turns.
@@ -996,7 +1118,7 @@ mod tests {
             let user = format!("Action for turn {}", i + 1);
             let long_response = "x".repeat(600); // ~150 tokens per response
             let assistant = format!(
-                r#"{{"story_json":{{"response":"{}","summary_hint":"Turn {} summary."}}}}"#,
+                r#"{{"location":"Test Castle","story_json":{{"response":"{}","summary_hint":"Turn {} summary."}}}}"#,
                 long_response, i + 1
             );
             pairs.push((user, assistant));
@@ -1014,6 +1136,9 @@ mod tests {
         // Summary should contain turn summaries
         assert!(ctx.compressed.story_so_far.contains("Turn 1 summary."));
         assert!(ctx.compressed.story_so_far.contains("Turn 2 summary."));
+        // Summary should contain the current-state trailer with extracted location
+        assert!(ctx.compressed.story_so_far.contains("CURRENT STATE"));
+        assert!(ctx.compressed.story_so_far.contains("Test Castle"));
     }
 
     #[test]
@@ -1041,6 +1166,7 @@ mod tests {
             None,
             "Look around",
             5120,
+            None,
         );
 
         assert!(result.prompt.contains("You are a story engine."));
@@ -1066,6 +1192,7 @@ mod tests {
             None,
             None,
             "Go east",
+            None,
         );
 
         assert!(!compressed);
