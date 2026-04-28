@@ -16,6 +16,19 @@ pub const NUM_PREDICT: u32 = 3072;
 /// 8192 - 3072 = 5120 tokens ≈ 20480 chars.
 pub const MAX_PROMPT_TOKENS: usize = NUM_CTX as usize - NUM_PREDICT as usize;
 
+/// Keep the model resident in VRAM between story turns.
+/// "30m" means: after a generation completes, Ollama keeps the model loaded
+/// for 30 minutes of idle time before unloading. This dramatically improves
+/// turn-to-turn latency because the model stays warm AND the KV cache prefix
+/// can be reused by llama.cpp's context shifting.
+///
+/// We use a string (not seconds) because Ollama's API accepts duration strings
+/// like "5m", "30m", "1h", "-1" (forever), or "0" (unload immediately).
+pub const KEEP_ALIVE_GENERATING: &str = "30m";
+
+/// Used when we explicitly want Ollama to unload (before ComfyUI runs).
+pub const KEEP_ALIVE_UNLOAD: &str = "0";
+
 /// Per-request response length configuration derived from the user's setting.
 pub struct ResponseLengthConfig {
     pub paragraph_instruction: &'static str,

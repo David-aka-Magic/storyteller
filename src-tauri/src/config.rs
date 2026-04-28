@@ -40,6 +40,13 @@ pub struct AppConfig {
     /// Whether ControlNet pose guidance is enabled.
     #[serde(default = "default_true")]
     pub controlnet_pose_enabled: bool,
+
+    /// How long Ollama keeps the model resident in VRAM after a generation.
+    /// Format: Ollama duration string. "30m" = 30 minutes (default), "1h" = one hour,
+    /// "-1" = keep loaded forever, "0" = unload immediately after each call.
+    /// Higher values = better turn-to-turn latency. Lower values = ComfyUI gets VRAM faster.
+    #[serde(default = "default_keep_alive")]
+    pub keep_alive: String,
 }
 
 fn default_content_rating() -> String {
@@ -58,6 +65,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_keep_alive() -> String {
+    "30m".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -72,6 +83,7 @@ impl Default for AppConfig {
             setup_completed: false,
             controlnet_pose_strength: 0.85,
             controlnet_pose_enabled: true,
+            keep_alive: default_keep_alive(),
         }
     }
 }

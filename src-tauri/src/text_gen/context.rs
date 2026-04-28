@@ -647,26 +647,72 @@ fn build_dual_character_section(
 
 /// Assemble the final ChatML prompt string from its components.
 /// Extracted so the budget enforcement loop can rebuild cheaply after dropping turns.
+///
+/// Section order — sorted by stability so llama.cpp KV-cache prefix reuse fires
+/// on as many tokens as possible between consecutive turns:
+///   1. system_prompt      — never changes mid-story
+///   2. story_premise      — stable across the whole story
+///   3. compressed_summary — stable until the next compression event
+///   4. character_section  — changes only on character edits or scene-roster shifts
+///   5. scene_context      — changes on location transitions
+///   6. pronoun_reminder   — tied to the scene's character set
+///   7. recent turns       — append-only history (do NOT reorder)
+///   8. persisted emotions — volatile (changes every turn) → tail
+///   9. current user input — always fresh → tail
 fn assemble_prompt_string(
-    full_system: &str,
+    system_prompt: &str,
+    story_premise: Option<&str>,
     compressed_summary: &str,
+    character_section: &str,
+    scene_context: Option<&str>,
+    scene_characters: &[CharacterInfo],
     recent_turns: &[StoryTurn],
     current_user_input: &str,
-    scene_characters: &[CharacterInfo],
     persisted_emotions: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
 
-    prompt.push_str(&format!("<|im_start|>system\n{}", full_system));
+    // ── 1. System prompt (most stable — never changes mid-story) ─────────────
+    prompt.push_str("<|im_start|>system\n");
+    prompt.push_str(system_prompt);
 
-    if !compressed_summary.is_empty() {
-        prompt.push_str(&format!(
-            "\n\n=== STORY SO FAR ===\n{}\n=== END STORY SO FAR ===",
-            compressed_summary
-        ));
+    // ── 2. Story premise (stable across the whole story) ─────────────────────
+    if let Some(premise) = story_premise {
+        if !premise.is_empty() {
+            prompt.push_str("\n\nSTORY PREMISE:\n");
+            prompt.push_str(premise);
+        }
     }
+
+    // ── 3. Compressed summary (stable until next compression event) ───────────
+    if !compressed_summary.is_empty() {
+        prompt.push_str("\n\n=== STORY SO FAR ===\n");
+        prompt.push_str(compressed_summary);
+        prompt.push_str("\n=== END STORY SO FAR ===");
+    }
+
+    // ── 4. Character database (changes only on edits or scene-roster shifts) ──
+    prompt.push_str("\n\n");
+    prompt.push_str(character_section);
+
+    // ── 5. Scene context (changes on location transitions) ───────────────────
+    if let Some(scene) = scene_context {
+        if !scene.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(scene);
+        }
+    }
+
+    // ── 6. Pronoun reminder (tied to the scene's character set) ──────────────
+    let pronoun_reminder = build_pronoun_reminder(scene_characters);
+    if !pronoun_reminder.is_empty() {
+        prompt.push_str("\n");
+        prompt.push_str(&pronoun_reminder);
+    }
+
     prompt.push_str("<|im_end|>");
 
+    // ── 7. Recent turn history (append-only — do NOT reorder or reformat) ────
     for turn in recent_turns {
         prompt.push_str(&format!("<|im_start|>user\n{}<|im_end|>", turn.user_input));
         if !turn.assistant_response.is_empty() {
@@ -675,6 +721,7 @@ fn assemble_prompt_string(
         }
     }
 
+    // ── 8. Volatile tail: emotional states (changes every turn) ──────────────
     // Prefer persisted emotional states (survive restarts); fall back to live extraction.
     let live_emotional_context = recent_turns.last()
         .map(|t| extract_emotional_states(&t.assistant_response))
@@ -692,36 +739,37 @@ fn assemble_prompt_string(
         )
     };
 
-    let pronoun_reminder = build_pronoun_reminder(scene_characters);
+    // ── 9. Current user input (always fresh) ─────────────────────────────────
     prompt.push_str(&format!(
-        "<|im_start|>user\n{}{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, emotional_states, generation_flags.{}]<|im_end|><|im_start|>assistant\n",
+        "<|im_start|>user\n{}{}\n\n[Do NOT use <think> tags. Respond with raw JSON only, no preamble. Include ALL fields: turn_id, story_json, scene_json, characters_in_scene, emotional_states, generation_flags.]<|im_end|><|im_start|>assistant\n",
         emotional_block,
         current_user_input,
-        pronoun_reminder
     ));
 
     prompt
 }
 
-/// Build the complete context string using Qwen 3.5's ChatML template format.
+/// Build the complete context string using ChatML template format.
 ///
-/// The output uses the `<|im_start|>...<|im_end|>` ChatML format
-/// that the existing `generate_story` in chat.rs already uses, so this is
-/// a drop-in replacement for the context-building portion of that function.
+/// Sections are ordered by stability so llama.cpp can maximally reuse its
+/// KV cache across consecutive turns (longest stable byte-prefix wins):
 ///
-/// Layout:
 /// ```text
 /// <|im_start|>system
-/// [system prompt + character DB + story premise]
-///
-/// === STORY SO FAR ===
-/// [compressed summary of older turns]
+/// [system prompt]           ← never changes
+/// [story premise]           ← stable across the whole story
+/// [compressed summary]      ← stable until next compression event
+/// [character DB section]    ← changes on edits / scene-roster shifts
+/// [scene context line]      ← changes on location transitions
+/// [pronoun reminder]        ← tied to the scene's character set
 /// <|im_end|>
-///
-/// <|im_start|>user [recent turn user input] <|im_end|>
-/// <|im_start|>assistant [recent turn story text] <|im_end|>
-/// ...
-/// <|im_start|>user [current input] <|im_end|>
+/// <|im_start|>user [turn N user input] <|im_end|>
+/// <|im_start|>assistant [turn N story text] <|im_end|>
+/// ...                       ← append-only; old turns never reformatted
+/// <|im_start|>user
+/// [emotional states]        ← volatile (changes every turn)
+/// [current user input]      ← always fresh
+/// <|im_end|>
 /// <|im_start|>assistant
 /// ```
 pub fn build_compressed_context(
@@ -735,20 +783,14 @@ pub fn build_compressed_context(
     max_prompt_tokens: usize,
     persisted_emotions: Option<&str>,
 ) -> AssembledContext {
-    // --- Step 1: Build the system prompt section ---
+    // --- Step 1: Build stable components once (not rebuilt inside the budget loop) ---
     let character_section = build_dual_character_section(scene_characters, all_characters);
-    let scene_section = scene_context
-        .map(|s| format!("\n{}\n", s))
-        .unwrap_or_default();
-    let premise_section = story_premise
-        .map(|p| format!("\nSTORY PREMISE:\n{}\n", p))
-        .unwrap_or_default();
 
-    let full_system = format!(
-        "{}\n{}{}{}",
-        system_prompt, character_section, scene_section, premise_section
-    );
-    let system_tokens = estimate_tokens(&full_system);
+    // Estimate stable-prefix tokens for the compression threshold check.
+    let system_tokens = estimate_tokens(system_prompt)
+        + story_premise.map(|p| estimate_tokens(p)).unwrap_or(0)
+        + estimate_tokens(&character_section)
+        + scene_context.map(|s| estimate_tokens(s)).unwrap_or(0);
     let input_tokens = estimate_tokens(current_user_input) + 8; // +framing
 
     // --- Step 2: Check if compression is needed ---
@@ -763,7 +805,17 @@ pub fn build_compressed_context(
     let mut recent_turns: Vec<StoryTurn> = conversation.turns.clone();
     let compressed_summary = conversation.compressed.story_so_far.clone();
 
-    let mut prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters, persisted_emotions);
+    let mut prompt = assemble_prompt_string(
+        system_prompt,
+        story_premise,
+        &compressed_summary,
+        &character_section,
+        scene_context,
+        scene_characters,
+        &recent_turns,
+        current_user_input,
+        persisted_emotions,
+    );
 
     // --- Step 4: Budget enforcement — trim oldest turns until prompt fits ---
     loop {
@@ -783,10 +835,41 @@ pub fn build_compressed_context(
             "[Context] Budget exceeded ({} tokens > {}), dropping turn {} to fit",
             estimated, max_prompt_tokens, removed.turn_number
         );
-        prompt = assemble_prompt_string(&full_system, &compressed_summary, &recent_turns, current_user_input, scene_characters, persisted_emotions);
+        prompt = assemble_prompt_string(
+            system_prompt,
+            story_premise,
+            &compressed_summary,
+            &character_section,
+            scene_context,
+            scene_characters,
+            &recent_turns,
+            current_user_input,
+            persisted_emotions,
+        );
     }
 
     let estimated_tokens = estimate_tokens(&prompt);
+
+    // Debug: log a hash of the stable prefix (system block only, up to and
+    // including the first <|im_end|>). This hash must be identical across
+    // consecutive turns whenever the story setup hasn't changed.
+    {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let system_end_token = "<|im_end|>";
+        let prefix_end = prompt.find(system_end_token)
+            .map(|i| i + system_end_token.len())
+            .unwrap_or(prompt.len());
+        let stable_prefix = &prompt[..prefix_end];
+        let mut hasher = DefaultHasher::new();
+        stable_prefix.hash(&mut hasher);
+        println!(
+            "[KVCache] Stable-prefix hash: {:016x} ({} chars, ~{} tokens)",
+            hasher.finish(),
+            stable_prefix.len(),
+            (stable_prefix.len() + 3) / 4
+        );
+    }
 
     AssembledContext {
         prompt,
@@ -955,9 +1038,10 @@ pub async fn summarize_with_llm(
         "prompt": prompt,
         "stream": false,
         "think": false,
+        "keep_alive": crate::text_gen::prompts::KEEP_ALIVE_GENERATING,
         "options": {
             "num_ctx": 4096,
-            "temperature": 0.3  // Low temperature for factual summarization
+            "temperature": 0.3
         }
     });
 

@@ -682,7 +682,7 @@ pub async fn generate_master_portrait(
             .post(format!("{}/api/generate", ollama_url))
             .json(&serde_json::json!({
                 "model": crate::text_gen::prompts::STORY_MODEL,
-                "keep_alive": 0
+                "keep_alive": crate::text_gen::prompts::KEEP_ALIVE_UNLOAD
             }))
             .timeout(std::time::Duration::from_secs(10))
             .send()

@@ -521,7 +521,7 @@ pub(crate) async fn unload_ollama_model(ollama_url: &str) {
         .post(&url)
         .json(&serde_json::json!({
             "model": STORY_MODEL,
-            "keep_alive": 0
+            "keep_alive": crate::text_gen::prompts::KEEP_ALIVE_UNLOAD
         }))
         .timeout(Duration::from_secs(10))
         .send()
@@ -1044,9 +1044,9 @@ pub async fn process_story_turn(
     let context_start = std::time::Instant::now();
 
     // Read config settings and build the effective system prompt
-    let (content_rating, response_length) = {
+    let (content_rating, response_length, keep_alive_setting) = {
         let config = config_state.0.lock().map_err(|e| e.to_string())?;
-        (config.content_rating.clone(), config.response_length.clone())
+        (config.content_rating.clone(), config.response_length.clone(), config.keep_alive.clone())
     };
 
     let length_config = get_response_length_config(&response_length);
@@ -1140,7 +1140,8 @@ pub async fn process_story_turn(
                     "model": "Story_v27",
                     "prompt": summary_prompt,
                     "stream": false,
-                    "think": false
+                    "think": false,
+                    "keep_alive": crate::text_gen::prompts::KEEP_ALIVE_GENERATING,
                 });
 
                 let llm_result = state.client
@@ -1328,6 +1329,7 @@ pub async fn process_story_turn(
         "raw": true,
         "stream": false,
         "think": false,
+        "keep_alive": &keep_alive_setting,
         "options": {
             "num_ctx": NUM_CTX,
             "num_predict": length_config.num_predict,
@@ -1370,6 +1372,29 @@ pub async fn process_story_turn(
         }
         success.ok_or(last_err)?
     };
+
+    // KV cache telemetry — verifies that llama.cpp is reusing the prefix.
+    {
+        let prompt_eval_count = api_res["prompt_eval_count"].as_u64().unwrap_or(0);
+        let prompt_eval_ns = api_res["prompt_eval_duration"].as_u64().unwrap_or(0);
+        let eval_count = api_res["eval_count"].as_u64().unwrap_or(0);
+        let eval_ns = api_res["eval_duration"].as_u64().unwrap_or(0);
+        let estimated_prompt_tokens = estimate_tokens(&assembled.prompt) as u64;
+        let cache_hit_pct = if estimated_prompt_tokens > 0 {
+            100.0 * (1.0 - (prompt_eval_count as f64 / estimated_prompt_tokens as f64))
+        } else {
+            0.0
+        };
+        println!(
+            "[KVCache] prompt_eval: {} of ~{} tokens evaluated ({:.1}% cache reuse) in {:.2}s | gen: {} tokens in {:.2}s",
+            prompt_eval_count,
+            estimated_prompt_tokens,
+            cache_hit_pct.max(0.0),
+            prompt_eval_ns as f64 / 1_000_000_000.0,
+            eval_count,
+            eval_ns as f64 / 1_000_000_000.0,
+        );
+    }
 
     let response_text_raw = api_res["response"]
         .as_str()
@@ -1891,8 +1916,12 @@ pub async fn generate_scene_image_for_turn(
         (config.content_rating.clone(), config.controlnet_pose_enabled, config.controlnet_pose_strength)
     };
 
-    // Extract pose emphasis from scene prompt keywords.
-    let pose_emphasis = extract_pose_emphasis(&scene_prompt);
+    // Prefer the LLM's declared pose; fall back to prose keyword scan.
+    let declared_pose = character_poses
+        .as_ref()
+        .and_then(|poses| poses.first())
+        .map(|s| s.as_str());
+    let pose_emphasis = extract_pose_emphasis(&scene_prompt, declared_pose);
     println!(
         "[Orchestrator][DEBUG] Pose emphasis from scene prompt: '{}'",
         &pose_emphasis
@@ -2141,13 +2170,20 @@ pub async fn generate_scene_image_for_turn(
         cfg: Some(5.5),
         width: Some(scene_width),
         height: Some(scene_height),
-        negative_prompt: Some(final_negative_override.unwrap_or_else(|| format!(
-            "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), decapitated, \
-             (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
-             close-up, closeup, head shot, headshot, cropped, zoomed in, \
-             cowboy hat, cowboy, western clothing{}",
-            sfw_negative
-        ))),
+        negative_prompt: Some(final_negative_override.unwrap_or_else(|| {
+            let lying_negative = match declared_pose {
+                Some(p) if p.to_uppercase().replace('-', "_") == "LYING_DOWN" => "",
+                _ => ", (lying down:1.4), (laying down:1.4), (horizontal pose:1.3), (on bed:1.2), (sleeping:1.2), (reclining:1.2), (prone:1.3), (supine:1.3)",
+            };
+            format!(
+                "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), decapitated, \
+                 (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
+                 close-up, closeup, head shot, headshot, cropped, zoomed in, \
+                 cowboy hat, cowboy, western clothing{}{}",
+                sfw_negative,
+                lying_negative
+            )
+        })),
         timeout_secs: Some(600),
         controlnet_image_path,
         controlnet_strength: Some(controlnet_strength),
@@ -2478,7 +2514,11 @@ pub async fn preview_scene_prompt(
         _ => "people",
     };
 
-    let pose_emphasis = extract_pose_emphasis(&scene_prompt);
+    let declared_pose = character_poses
+        .as_ref()
+        .and_then(|poses| poses.first())
+        .map(|s| s.as_str());
+    let pose_emphasis = extract_pose_emphasis(&scene_prompt, declared_pose);
 
     let mut char_segments: Vec<String> = Vec::new();
     for (i, character) in characters.iter().enumerate().take(num_chars) {
@@ -2588,32 +2628,87 @@ pub async fn preview_scene_prompt(
         ""
     };
 
+    let lying_negative = match declared_pose {
+        Some(p) if p.to_uppercase().replace('-', "_") == "LYING_DOWN" => "",
+        _ => ", (lying down:1.4), (laying down:1.4), (horizontal pose:1.3), (on bed:1.2), (sleeping:1.2), (reclining:1.2), (prone:1.3), (supine:1.3)",
+    };
     let negative = format!(
         "(cropped head:1.5), (head out of frame:1.5), (cut off head:1.5), (headless:1.5), decapitated, \
          (worst quality, low quality:1.4), (bad anatomy:1.3), (bad hands:1.4), \
          close-up, closeup, head shot, headshot, cropped, zoomed in, \
-         cowboy hat, cowboy, western clothing{}",
-        sfw_negative
+         cowboy hat, cowboy, western clothing{}{}",
+        sfw_negative,
+        lying_negative
     );
 
     let _ = app_data; // used implicitly above
-    let _ = character_poses; // accepted for API symmetry, not used in preview
     Ok(ScenePromptPreview { positive, negative })
 }
 
 /// Scans the scene prompt for action/pose keywords and returns an emphasized
+/// Returns true if `haystack` contains `needle` as a whole word.
+/// A word boundary is the start/end of the string or any non-alphanumeric,
+/// non-underscore byte. Multi-word needles (containing spaces) are matched as
+/// a literal run, with only the outer edges checked for word boundaries.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let needle_bytes = needle.as_bytes(); // callers pass already-lowercased needle
+    let hay_bytes = haystack.as_bytes(); // haystack is already lowercased by callers
+    let n = needle_bytes.len();
+
+    let mut i = 0;
+    while i + n <= hay_bytes.len() {
+        if &hay_bytes[i..i + n] == needle_bytes {
+            let before_ok = i == 0 || !is_word_char(hay_bytes[i - 1]);
+            let after_ok = i + n == hay_bytes.len() || !is_word_char(hay_bytes[i + n]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// pose tag to place at the front of the enriched prompt.  SDXL weighs early
 /// tokens and `(tag:weight)` syntax most heavily, so putting the pose here
 /// overrides the model's default "standing facing camera" tendency.
 /// Returns an empty string when no recognizable pose is detected.
-fn extract_pose_emphasis(scene_prompt: &str) -> String {
+fn extract_pose_emphasis(scene_prompt: &str, declared_pose: Option<&str>) -> String {
+    if let Some(pose) = declared_pose {
+        let normalized = pose.to_uppercase().replace('-', "_");
+        let tag = match normalized.as_str() {
+            "STANDING"   => "(person standing upright, full body visible:1.3)",
+            "SITTING"    => "(person sitting down:1.3)",
+            "LYING_DOWN" => "(person lying down, horizontal:1.4)",
+            "RUNNING"    => "(person running, dynamic motion:1.3)",
+            "KNEELING"   => "(person kneeling down:1.3)",
+            "LEANING"    => "(person leaning, propped up:1.3)",
+            "DRIVING"    => "(person sitting in vehicle, driving:1.3)",
+            "COOKING"    => "(person cooking in kitchen, hands busy:1.3)",
+            "FIGHTING"   => "(person fighting, action pose:1.3)",
+            "WALKING"    => "(person walking, in motion:1.2)",
+            _ => "",
+        };
+        if !tag.is_empty() {
+            return tag.to_string();
+        }
+        // CUSTOM or unrecognized — fall through to prose keyword scan
+    }
+
     let lower = scene_prompt.to_lowercase();
 
     // Ordered from most-specific to least-specific so a driving scene doesn't
     // accidentally match the generic "sitting" branch first.
     let checks: &[(&[&str], &str)] = &[
         (
-            &["lying", "lay", "nap", "sleep", "bed", "resting"],
+            &["lying", "laying", "lays", "lay down", "lying down", "napping", "sleeping", "asleep", "in bed", "lying in bed", "lying on", "passed out", "unconscious"],
             "(person lying down in bed, resting, eyes closed:1.4)",
         ),
         (
@@ -2647,7 +2742,7 @@ fn extract_pose_emphasis(scene_prompt: &str) -> String {
     ];
 
     for (keywords, emphasis) in checks {
-        if keywords.iter().any(|kw| lower.contains(kw)) {
+        if keywords.iter().any(|kw| contains_word(&lower, kw)) {
             return emphasis.to_string();
         }
     }
@@ -2660,7 +2755,7 @@ fn detect_pose_name_from_prompt(scene_prompt: &str) -> String {
     let lower = scene_prompt.to_lowercase();
 
     let checks: &[(&[&str], &str)] = &[
-        (&["lying", "lay", "nap", "sleep", "bed", "resting"], "LYING_DOWN"),
+        (&["lying", "laying", "lays", "lay down", "lying down", "napping", "sleeping", "asleep", "in bed", "lying in bed", "lying on", "passed out", "unconscious"], "LYING_DOWN"),
         (&["driving", "truck", "car", "steering", "behind the wheel"], "DRIVING"),
         (&["riding", "horse", "horseback"], "STANDING"), // no riding skeleton yet
         (&["sitting", "sat", "seat", "chair", "booth", "diner", "eating"], "SITTING"),
@@ -2673,7 +2768,7 @@ fn detect_pose_name_from_prompt(scene_prompt: &str) -> String {
     ];
 
     for (keywords, pose_name) in checks {
-        if keywords.iter().any(|kw| lower.contains(kw)) {
+        if keywords.iter().any(|kw| contains_word(&lower, kw)) {
             return pose_name.to_string();
         }
     }

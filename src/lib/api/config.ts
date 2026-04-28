@@ -12,6 +12,7 @@ export interface AppConfig {
   setup_completed: boolean;
   controlnet_pose_strength: number;
   controlnet_pose_enabled: boolean;
+  keep_alive: string;
 }
 
 export async function getConfig(): Promise<AppConfig> {
