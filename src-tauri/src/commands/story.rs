@@ -291,7 +291,7 @@ pub async fn load_story(
         "SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style, c.hair_color,
                 c.body_type, c.personality, c.additional_notes, c.default_clothing,
                 c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
-                c.eye_color, c.height_scale, c.weight_scale, c.content_rating
+                c.eye_color, c.height_scale, c.weight_scale, c.content_rating, c.is_pov
          FROM characters c
          INNER JOIN story_characters sc ON sc.character_id = c.id
          WHERE sc.story_id = ?
@@ -326,6 +326,7 @@ pub async fn load_story(
             height_scale: r.get("height_scale"),
             weight_scale: r.get("weight_scale"),
             content_rating: r.get("content_rating"),
+            is_pov: r.try_get::<i64, _>("is_pov").ok().map(|n| n != 0),
         })
         .collect();
 
@@ -950,7 +951,7 @@ async fn load_story_internal(
         "SELECT c.id, c.story_id, c.name, c.age, c.gender, c.skin_tone, c.hair_style, c.hair_color,
                 c.body_type, c.personality, c.additional_notes, c.default_clothing,
                 c.sd_prompt, c.image, c.master_image_path, c.seed, c.art_style,
-                c.eye_color, c.height_scale, c.weight_scale, c.content_rating
+                c.eye_color, c.height_scale, c.weight_scale, c.content_rating, c.is_pov
          FROM characters c
          INNER JOIN story_characters sc ON sc.character_id = c.id
          WHERE sc.story_id = ?
@@ -985,6 +986,7 @@ async fn load_story_internal(
             height_scale: r.get("height_scale"),
             weight_scale: r.get("weight_scale"),
             content_rating: r.get("content_rating"),
+            is_pov: r.try_get::<i64, _>("is_pov").ok().map(|n| n != 0),
         })
         .collect();
 

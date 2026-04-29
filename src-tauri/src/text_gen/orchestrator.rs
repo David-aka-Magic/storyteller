@@ -190,7 +190,7 @@ async fn load_characters_for_context(
 ) -> Result<Vec<CharacterInfo>, String> {
     let rows = if let Some(sid) = story_id {
         sqlx::query(
-            "SELECT c.name, c.age, c.gender, c.personality, c.sd_prompt, c.default_clothing \
+            "SELECT c.name, c.age, c.gender, c.personality, c.sd_prompt, c.default_clothing, c.is_pov \
              FROM characters c \
              INNER JOIN story_characters sc ON sc.character_id = c.id \
              WHERE sc.story_id = ? ORDER BY c.name",
@@ -200,7 +200,7 @@ async fn load_characters_for_context(
         .await
     } else {
         sqlx::query(
-            "SELECT name, age, gender, personality, sd_prompt, default_clothing \
+            "SELECT name, age, gender, personality, sd_prompt, default_clothing, is_pov \
              FROM characters ORDER BY name",
         )
         .fetch_all(db)
@@ -217,6 +217,7 @@ async fn load_characters_for_context(
             personality: r.get("personality"),
             appearance: r.get("sd_prompt"),
             default_clothing: r.get("default_clothing"),
+            is_pov: r.try_get::<i64, _>("is_pov").ok().map(|n| n != 0).unwrap_or(false),
         })
         .collect())
 }
@@ -228,7 +229,7 @@ async fn load_scene_characters_for_context(
     scene_id: i64,
 ) -> Result<Vec<CharacterInfo>, String> {
     let rows = sqlx::query(
-        "SELECT c.name, c.age, c.gender, c.personality, c.sd_prompt, c.default_clothing \
+        "SELECT c.name, c.age, c.gender, c.personality, c.sd_prompt, c.default_clothing, c.is_pov \
          FROM characters c \
          INNER JOIN scene_characters sc ON sc.character_id = c.id \
          WHERE sc.scene_id = ? ORDER BY c.name",
@@ -247,6 +248,7 @@ async fn load_scene_characters_for_context(
             personality: r.get("personality"),
             appearance: r.get("sd_prompt"),
             default_clothing: r.get("default_clothing"),
+            is_pov: r.try_get::<i64, _>("is_pov").ok().map(|n| n != 0).unwrap_or(false),
         })
         .collect())
 }
@@ -415,7 +417,7 @@ async fn lookup_characters_in_db(
         // Try story-scoped lookup first (via junction table)
         let row = if let Some(sid) = story_id {
             let r = sqlx::query(
-                "SELECT c.id, c.name, c.master_image_path, c.sd_prompt, c.default_clothing, c.art_style, c.gender \
+                "SELECT c.id, c.name, c.master_image_path, c.sd_prompt, c.default_clothing, c.art_style, c.gender, c.is_pov \
                  FROM characters c \
                  INNER JOIN story_characters sc ON sc.character_id = c.id \
                  WHERE c.name = ? AND sc.story_id = ? LIMIT 1",
@@ -436,7 +438,7 @@ async fn lookup_characters_in_db(
             }
         } else {
             sqlx::query(
-                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender \
+                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender, is_pov \
                  FROM characters WHERE name = ? LIMIT 1",
             )
             .bind(&scene_char.name)
@@ -456,6 +458,7 @@ async fn lookup_characters_in_db(
                 default_clothing: r.get("default_clothing"),
                 art_style: r.get("art_style"),
                 gender: r.get("gender"),
+                is_pov: r.try_get::<i64, _>("is_pov").ok().map(|n| n != 0).unwrap_or(false),
             }
         });
 
@@ -1862,6 +1865,18 @@ pub async fn generate_scene_image_for_turn(
         );
     }
 
+    let characters: Vec<CharacterLookup> = characters
+        .into_iter()
+        .filter(|c| {
+            if c.is_pov {
+                println!("[Orchestrator] Skipping POV character '{}' from image gen (no portrait)", c.name);
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
     if characters.is_empty() {
         return Err(
             "No characters with reference images found. \
@@ -2270,6 +2285,17 @@ pub async fn illustrate_scene_custom(
 
     // Load characters with reference images for this story
     let all_characters = get_characters_with_references(Some(story_id), &state).await?;
+    let all_characters: Vec<CharacterLookup> = all_characters
+        .into_iter()
+        .filter(|c| {
+            if c.is_pov {
+                println!("[Orchestrator] Skipping POV character '{}' from image gen (no portrait)", c.name);
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
 
     if all_characters.is_empty() {
         return Err(
@@ -2481,6 +2507,18 @@ pub async fn preview_scene_prompt(
     } else {
         characters
     };
+
+    let characters: Vec<CharacterLookup> = characters
+        .into_iter()
+        .filter(|c| {
+            if c.is_pov {
+                println!("[Orchestrator] Skipping POV character '{}' from image gen (no portrait)", c.name);
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
 
     if characters.is_empty() {
         return Err(
@@ -2810,7 +2848,7 @@ async fn get_characters_with_references(
     // falling back to global if story_id is None or returns nothing.
     let rows: Vec<sqlx::sqlite::SqliteRow> = if let Some(sid) = story_id {
         let scoped = sqlx::query(
-            "SELECT c.id, c.name, c.master_image_path, c.sd_prompt, c.default_clothing, c.art_style, c.gender
+            "SELECT c.id, c.name, c.master_image_path, c.sd_prompt, c.default_clothing, c.art_style, c.gender, c.is_pov
              FROM characters c
              INNER JOIN story_characters sc ON sc.character_id = c.id
              WHERE sc.story_id = ? AND c.master_image_path IS NOT NULL"
@@ -2823,7 +2861,7 @@ async fn get_characters_with_references(
         if scoped.is_empty() {
             // Fall back to global if story scope returns nothing
             sqlx::query(
-                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
+                "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender, is_pov
                  FROM characters WHERE master_image_path IS NOT NULL"
             )
             .fetch_all(&state.db)
@@ -2835,7 +2873,7 @@ async fn get_characters_with_references(
     } else {
         // No story_id — query all characters with reference images
         sqlx::query(
-            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender
+            "SELECT id, name, master_image_path, sd_prompt, default_clothing, art_style, gender, is_pov
              FROM characters WHERE master_image_path IS NOT NULL"
         )
         .fetch_all(&state.db)
@@ -2851,6 +2889,7 @@ async fn get_characters_with_references(
         default_clothing: r.get("default_clothing"),
         art_style: r.get("art_style"),
         gender: r.get("gender"),
+        is_pov: r.try_get::<i64, _>("is_pov").ok().map(|n| n != 0).unwrap_or(false),
     }).collect())
 }
 
@@ -3137,6 +3176,7 @@ mod tests {
             default_clothing: Some("casual dress".into()),
             art_style: Some("Realistic".into()),
             gender: Some("female".into()),
+            is_pov: false,
         };
         let fragment = character_prompt_fragment(&cis, Some(&db));
         assert!(fragment.contains("young woman, brown hair"));
@@ -3186,6 +3226,7 @@ mod tests {
             default_clothing: Some("leather armor".into()),
             art_style: None,
             gender: Some("male".into()),
+            is_pov: false,
         });
         let results = vec![(raw, db)];
         let chars = build_characters_in_scene(&results);
@@ -3203,6 +3244,7 @@ mod tests {
             personality: Some("Brave".to_string()),
             appearance: Some("Tall, dark hair".to_string()),
             default_clothing: Some("Leather armor".to_string()),
+            is_pov: false,
         }];
         let tokens = estimate_character_db_tokens(&chars);
         assert!(tokens > 0);

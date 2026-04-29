@@ -96,7 +96,7 @@
   }
 
   function batchRegenerate() {
-    const chars = characters.filter(c => selectedIds.has(c.id));
+    const chars = characters.filter(c => selectedIds.has(c.id) && !(c as any).is_pov);
     for (const c of chars) {
       onopenportraitgen?.(c);
     }
@@ -162,7 +162,7 @@
 
   // ── Stats ──
   const missingPortraitCount = $derived(
-    characters.filter(c => !(c as any).master_image_path).length
+    characters.filter(c => !(c as any).master_image_path && !(c as any).is_pov).length
   );
 </script>
 

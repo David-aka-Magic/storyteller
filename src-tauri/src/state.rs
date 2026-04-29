@@ -190,6 +190,8 @@ impl OllamaState {
             .execute(pool).await.ok();
         sqlx::query("ALTER TABLE characters ADD COLUMN content_rating TEXT DEFAULT 'sfw'")
             .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE characters ADD COLUMN is_pov INTEGER DEFAULT 0")
+            .execute(pool).await.ok();
 
         // =====================================================================
         // STORY_CHARACTERS junction table (many-to-many: character <-> story)

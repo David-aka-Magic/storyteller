@@ -13,6 +13,8 @@
   import StoryModal from '../components/StoryModal.svelte';
   import SettingsModal from '../components/settings/SettingsModal.svelte';
   import StoryGallery from '../components/story/StoryGallery.svelte';
+  import NewStoryModal from '../components/story/NewStoryModal.svelte';
+  import POVCharacterModal from '../components/POVCharacterModal.svelte';
 
   import { currentTheme, applyTheme } from '$lib/stores/theme';
   import { processStoryTurn, generateSceneImageForTurn } from '$lib/api/text-gen';
@@ -53,6 +55,11 @@
   let showSettingsModal = false;
   let scenePanelCollapsed = false;
   let showGallery = false;
+
+  let showNewStoryModal = false;
+  let pendingPovStoryId: number | null = null;
+  let showPovModal = false;
+  let povCharacterToEdit: CharacterProfile | null = null;
 
   // Setup wizard gate
   let setupComplete = false;
@@ -370,6 +377,24 @@
     } catch (e) { console.error(e); }
   }
 
+  async function handleCreateNewStory(data: { title: string; description: string; characterIds: number[]; contentRating: string; isPovStory: boolean }) {
+    showNewStoryModal = false;
+    try {
+      const newId = await createStory(data.title, data.description);
+      for (const charId of data.characterIds) {
+        await linkCharacterToStory(charId, newId);
+      }
+      await fetchStoryList();
+      if (data.isPovStory) {
+        pendingPovStoryId = newId;
+        povCharacterToEdit = null;
+        showPovModal = true;
+      } else {
+        await loadSelectedStory(String(newId));
+      }
+    } catch (e) { console.error('[handleCreateNewStory] Failed:', e); }
+  }
+
   async function deleteStory(id: string) {
     try {
       await apiDeleteStory(Number(id));
@@ -483,7 +508,7 @@
       {stories}
       {selectedStoryId}
       {isLoading}
-      onnewstory={() => { storyToEdit = null; showStoryModal = true; }}
+      onnewstory={() => showNewStoryModal = true}
       onselectstory={(id) => loadSelectedStory(id)}
       onopensettings={() => showSettingsModal = true}
       ondeletestory={(id) => deleteStory(id)}
@@ -538,7 +563,16 @@
       refreshKey={scenePanelRefreshKey}
       onToggleCollapse={(val) => scenePanelCollapsed = val}
       onCreateCharacter={() => { characterToEdit = null; showCharModal = true; }}
-      onEditCharacter={(char) => { characterToEdit = char; showCharModal = true; }}
+      onEditCharacter={(char) => {
+        if ((char as any).is_pov) {
+          povCharacterToEdit = char;
+          pendingPovStoryId = null;
+          showPovModal = true;
+        } else {
+          characterToEdit = char;
+          showCharModal = true;
+        }
+      }}
       onDeleteCharacter={(id) => deleteCharacter(id)}
       onsceneselected={(sceneId, sceneName, charNames) => {
         pendingSceneTransition = { sceneName, characterNames: charNames };
@@ -573,6 +607,35 @@
       show={showSettingsModal}
       onclose={() => showSettingsModal = false}
       oncontentchange={() => { fetchStoryList(); fetchCharacterList(); }}
+    />
+
+    <NewStoryModal
+      show={showNewStoryModal}
+      availableCharacters={allCharacters}
+      oncreate={handleCreateNewStory}
+      onclose={() => showNewStoryModal = false}
+    />
+
+    <POVCharacterModal
+      show={showPovModal}
+      character={povCharacterToEdit}
+      storyId={pendingPovStoryId}
+      onsave={(c) => {
+        showPovModal = false;
+        const sid = pendingPovStoryId;
+        povCharacterToEdit = null;
+        pendingPovStoryId = null;
+        if (sid != null) loadSelectedStory(String(sid));
+        fetchCharacterList();
+      }}
+      onclose={() => {
+        const sid = pendingPovStoryId;
+        showPovModal = false;
+        povCharacterToEdit = null;
+        pendingPovStoryId = null;
+        if (sid != null) loadSelectedStory(String(sid));
+        fetchCharacterList();
+      }}
     />
   </div>
   {/if}

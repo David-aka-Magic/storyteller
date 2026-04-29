@@ -102,6 +102,8 @@ export interface CharacterProfile {
   height_scale?: number;   // 1-5 (1=Very Short … 5=Very Tall), default 3
   weight_scale?: number;   // 1-5 (1=Very Slim … 5=Very Heavyset), default 3
   content_rating?: 'sfw' | 'nsfw';
+  /** True if this character represents the user's POV (no portrait, no IP-Adapter). */
+  is_pov?: boolean;
 }
 
 /** Lightweight lookup result for LLM integration. */
@@ -112,6 +114,7 @@ export interface CharacterLookup {
   sd_prompt?: string;
   default_clothing?: string;
   art_style?: string;
+  is_pov?: boolean;
 }
 
 /** Scene character from LLM output. */

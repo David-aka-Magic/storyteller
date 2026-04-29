@@ -39,6 +39,7 @@
   let imgLoaded = $state(false);
   let imgError = $state(false);
 
+  const isPov = $derived(!!(character as any).is_pov);
   const portraitSrc = $derived(resolvePortrait(character));
   const hasMasterImage = $derived(!!(character as any).master_image_path);
   const hasAnyImage = $derived(!!character.image || hasMasterImage);
@@ -133,8 +134,8 @@
       <span class="portrait-initial">{character.name.charAt(0).toUpperCase()}</span>
     {/if}
 
-    <!-- Missing master image warning -->
-    {#if !hasMasterImage}
+    <!-- Missing master image warning (suppressed for POV characters — they never have portraits) -->
+    {#if !hasMasterImage && !isPov}
       <div
         class="missing-master"
         title="No master reference image — portraits won't use IP-Adapter"
@@ -145,6 +146,11 @@
       >
         ⚠️
       </div>
+    {/if}
+
+    <!-- POV badge pill -->
+    {#if isPov}
+      <div class="pov-pill" title="Player character — no portrait generated">POV</div>
     {/if}
   </div>
 
@@ -255,7 +261,9 @@
         </div>
       {/if}
 
-      {#if !hasMasterImage}
+      {#if isPov}
+        <div class="qv-pov-notice">POV — Player character, no portrait generated</div>
+      {:else if !hasMasterImage}
         <div class="qv-warning">⚠️ No master reference image</div>
       {/if}
     </div>
@@ -363,6 +371,21 @@
 
   .missing-master:hover {
     transform: scale(1.2);
+  }
+
+  .pov-pill {
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    font-size: 0.58rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--accent-primary, #58a6ff);
+    color: #0d1117;
+    pointer-events: none;
+    user-select: none;
   }
 
   /* ── Info ── */
@@ -573,6 +596,17 @@
     color: var(--accent-warning, #e3b341);
     padding: 4px 8px;
     background: rgba(227, 179, 65, 0.08);
+    border-radius: 4px;
+    text-align: center;
+  }
+
+  .qv-pov-notice {
+    margin-top: 8px;
+    font-size: 0.72rem;
+    color: var(--accent-primary, #58a6ff);
+    padding: 4px 8px;
+    background: rgba(88, 166, 255, 0.08);
+    border: 1px solid rgba(88, 166, 255, 0.18);
     border-radius: 4px;
     text-align: center;
   }

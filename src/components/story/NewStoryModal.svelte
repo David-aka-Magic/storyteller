@@ -1,13 +1,12 @@
 <!-- src/components/story/NewStoryModal.svelte -->
 <!--
-  New Story creation modal with a streamlined wizard flow:
-    Step 1: Title & Description (premise/setting)
-    Step 2: (Optional) Link existing characters or note to create later
-    Step 3: Review & Start
+  New Story creation modal — 2-step wizard:
+    Step 1: Premise (title, description, content rating, genre presets, POV checkbox)
+    Step 2: Review & Start (review card + optional "Link existing characters" disclosure)
 
   Dispatches:
-    'create' → { title, description, characterIds }
-    'close'  → dismiss modal
+    oncreate → { title, description, characterIds, contentRating, isPovStory }
+    onclose  → dismiss modal
 -->
 <script lang="ts">
   import type { CharacterProfile } from '../../lib/types';
@@ -17,18 +16,26 @@
   /** All available characters the user can pick from */
   export let availableCharacters: CharacterProfile[] = [];
 
-  export let oncreate: ((data: { title: string; description: string; characterIds: number[]; contentRating: string }) => void) | undefined = undefined;
+  export let oncreate: ((data: {
+    title: string;
+    description: string;
+    characterIds: number[];
+    contentRating: string;
+    isPovStory: boolean;
+  }) => void) | undefined = undefined;
   export let onclose: (() => void) | undefined = undefined;
 
   // ── Wizard State ──
   let step = 1;
-  const TOTAL_STEPS = 3;
+  const TOTAL_STEPS = 2;
 
   // ── Form Data ──
   let title = '';
   let description = '';
   let selectedCharIds: Set<number> = new Set();
   let contentRating: 'sfw' | 'nsfw' = 'sfw';
+  let isPovStory = false;
+  let showLinkExistingPicker = false;
 
   // ── Validation ──
   $: titleValid = title.trim().length >= 2;
@@ -41,6 +48,8 @@
     title = '';
     description = '';
     selectedCharIds = new Set();
+    isPovStory = false;
+    showLinkExistingPicker = false;
     getConfig().then(cfg => { contentRating = cfg.content_rating; }).catch(() => {});
   }
 
@@ -68,6 +77,7 @@
       description: description.trim(),
       characterIds: Array.from(selectedCharIds),
       contentRating,
+      isPovStory,
     });
   }
 
@@ -81,6 +91,16 @@
 
   function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget) close();
+  }
+
+  // When the user manually toggles the POV checkbox, close the picker and
+  // clear any character selection so there's no stale state.
+  // This must live here (not in a $: block) to avoid Svelte 5's effect_update_depth_exceeded.
+  function onPovToggle() {
+    if (isPovStory) {
+      showLinkExistingPicker = false;
+      selectedCharIds = new Set();
+    }
   }
 
   // ── Genre / Setting Presets ──
@@ -134,7 +154,7 @@
 
       <!-- ═══ Step 1: Premise ═══ -->
       {#if step === 1}
-        <div class="step-content" >
+        <div class="step-content">
           <div class="step-title">Story Premise</div>
           <p class="step-subtitle">Give your story a name and describe the world it takes place in.</p>
 
@@ -173,6 +193,17 @@
             </div>
           </div>
 
+          <!-- POV Checkbox -->
+          <div class="form-row pov-row">
+            <label class="pov-checkbox-label">
+              <input type="checkbox" bind:checked={isPovStory} on:change={onPovToggle} />
+              <div class="pov-text">
+                <span class="pov-title">I'll play as a character in this story</span>
+                <span class="pov-hint">No portrait — you'll describe them after creating the story.</span>
+              </div>
+            </label>
+          </div>
+
           <!-- Quick Presets -->
           <div class="presets-section">
             <span class="presets-label">Quick start</span>
@@ -191,64 +222,8 @@
         </div>
       {/if}
 
-      <!-- ═══ Step 2: Characters ═══ -->
+      <!-- ═══ Step 2: Review ═══ -->
       {#if step === 2}
-        <div class="step-content">
-          <div class="step-title">Characters</div>
-          <p class="step-subtitle">
-            Select existing characters to include, or skip this — you can add characters later.
-          </p>
-
-          {#if availableCharacters.length === 0}
-            <div class="no-chars-notice">
-              <span class="notice-icon">👤</span>
-              <span>No characters created yet. You can add them after starting the story.</span>
-            </div>
-          {:else}
-            <div class="character-picker">
-              {#each availableCharacters as char (char.id)}
-                <button
-                  class="char-pick-card"
-                  class:selected={selectedCharIds.has(char.id)}
-                  on:click={() => toggleCharacter(char.id)}
-                >
-                  <div class="cpc-avatar" class:has-image={!!char.image}>
-                    {#if char.image}
-                      <img src="data:image/png;base64,{char.image}" alt={char.name} />
-                    {:else}
-                      <span>{char.name.charAt(0).toUpperCase()}</span>
-                    {/if}
-                  </div>
-                  <div class="cpc-info">
-                    <span class="cpc-name">{char.name}</span>
-                    <span class="cpc-detail">
-                      {[char.gender, char.personality].filter(Boolean).join(' · ') || 'No details'}
-                    </span>
-                  </div>
-                  <div class="cpc-check">
-                    {#if selectedCharIds.has(char.id)}
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="var(--accent-primary, #58a6ff)" stroke="none">
-                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                      </svg>
-                    {:else}
-                      <div class="cpc-unchecked"></div>
-                    {/if}
-                  </div>
-                </button>
-              {/each}
-            </div>
-
-            {#if selectedCharIds.size > 0}
-              <div class="selected-count">
-                {selectedCharIds.size} character{selectedCharIds.size !== 1 ? 's' : ''} selected
-              </div>
-            {/if}
-          {/if}
-        </div>
-      {/if}
-
-      <!-- ═══ Step 3: Review ═══ -->
-      {#if step === 3}
         <div class="step-content">
           <div class="step-title">Review & Start</div>
           <p class="step-subtitle">Everything look good? Hit "Create Story" to begin your adventure.</p>
@@ -271,16 +246,89 @@
             <div class="review-row">
               <span class="review-label">Characters</span>
               <span class="review-value">
-                {#if selectedCharIds.size === 0}
-                  <em class="none-text">None selected — you can add later</em>
-                {:else}
+                {#if isPovStory}
+                  <em class="pov-note">You'll create your POV character next</em>
+                {:else if selectedCharIds.size > 0}
                   {availableCharacters
                     .filter(c => selectedCharIds.has(c.id))
                     .map(c => c.name)
                     .join(', ')}
+                {:else}
+                  <em class="none-text">None selected — you can add later</em>
                 {/if}
               </span>
             </div>
+          </div>
+
+          <!-- Link Existing Characters Disclosure -->
+          <div class="link-existing-section">
+            {#if isPovStory}
+              <p class="pov-disabled-hint">
+                Linking existing characters is disabled while creating a POV story — you can add them after the story is created.
+              </p>
+            {:else if !showLinkExistingPicker}
+              <button
+                class="link-existing-toggle"
+                type="button"
+                on:click={() => showLinkExistingPicker = true}
+                disabled={availableCharacters.length === 0}
+              >
+                + Link existing characters (optional)
+              </button>
+              {#if availableCharacters.length === 0}
+                <span class="link-existing-empty-hint">No existing characters in your roster yet.</span>
+              {/if}
+            {:else}
+              <div class="link-existing-expanded">
+                <div class="link-existing-header">
+                  <span>Link existing characters</span>
+                  <button
+                    type="button"
+                    class="link-existing-close"
+                    on:click={() => { showLinkExistingPicker = false; selectedCharIds = new Set(); }}
+                  >
+                    Close
+                  </button>
+                </div>
+                <div class="character-picker">
+                  {#each availableCharacters as char (char.id)}
+                    <button
+                      class="char-pick-card"
+                      class:selected={selectedCharIds.has(char.id)}
+                      on:click={() => toggleCharacter(char.id)}
+                    >
+                      <div class="cpc-avatar" class:has-image={!!char.image}>
+                        {#if char.image}
+                          <img src="data:image/png;base64,{char.image}" alt={char.name} />
+                        {:else}
+                          <span>{char.name.charAt(0).toUpperCase()}</span>
+                        {/if}
+                      </div>
+                      <div class="cpc-info">
+                        <span class="cpc-name">{char.name}</span>
+                        <span class="cpc-detail">
+                          {[char.gender, char.personality].filter(Boolean).join(' · ') || 'No details'}
+                        </span>
+                      </div>
+                      <div class="cpc-check">
+                        {#if selectedCharIds.has(char.id)}
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="var(--accent-primary, #58a6ff)" stroke="none">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                          </svg>
+                        {:else}
+                          <div class="cpc-unchecked"></div>
+                        {/if}
+                      </div>
+                    </button>
+                  {/each}
+                </div>
+                {#if selectedCharIds.size > 0}
+                  <div class="selected-count">
+                    {selectedCharIds.size} character{selectedCharIds.size !== 1 ? 's' : ''} selected
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </div>
         </div>
       {/if}
@@ -518,6 +566,55 @@
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
   }
 
+  /* ── POV Checkbox ── */
+  .form-row.pov-row {
+    margin-bottom: 16px;
+  }
+
+  .pov-checkbox-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border-secondary, #30363d);
+    background: var(--bg-tertiary, #21262d);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .pov-checkbox-label:hover {
+    border-color: var(--accent-primary, #58a6ff);
+    background: rgba(88, 166, 255, 0.04);
+  }
+
+  .pov-checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    accent-color: var(--accent-primary, #58a6ff);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .pov-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .pov-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary, #c9d1d9);
+  }
+
+  .pov-hint {
+    font-size: 0.74rem;
+    color: var(--text-muted, #6e7681);
+    line-height: 1.4;
+  }
+
   /* ── Presets ── */
   .presets-section {
     margin-top: 8px;
@@ -555,29 +652,12 @@
     color: var(--text-primary, #c9d1d9);
   }
 
-  /* ── Character Picker ── */
-  .no-chars-notice {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 16px;
-    background: var(--bg-tertiary, #21262d);
-    border: 1px dashed var(--border-secondary, #30363d);
-    border-radius: 8px;
-    font-size: 0.85rem;
-    color: var(--text-muted, #6e7681);
-  }
-
-  .notice-icon {
-    font-size: 1.4rem;
-    opacity: 0.5;
-  }
-
+  /* ── Character Picker (inside disclosure) ── */
   .character-picker {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 260px;
+    max-height: 220px;
     overflow-y: auto;
   }
 
@@ -715,6 +795,103 @@
 
   .none-text {
     color: var(--text-muted, #6e7681);
+  }
+
+  .pov-note {
+    color: var(--accent-primary, #58a6ff);
+  }
+
+  /* ── Link Existing Disclosure ── */
+  .link-existing-section {
+    margin-top: 14px;
+  }
+
+  .link-existing-toggle {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: none;
+    border: 1px dashed var(--border-secondary, #30363d);
+    color: var(--accent-primary, #58a6ff);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    font-family: inherit;
+    text-align: center;
+  }
+
+  .link-existing-toggle:hover:not(:disabled) {
+    background: rgba(88, 166, 255, 0.06);
+    border-color: var(--accent-primary, #58a6ff);
+  }
+
+  .link-existing-toggle:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    color: var(--text-muted, #6e7681);
+  }
+
+  .link-existing-empty-hint {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.74rem;
+    color: var(--text-muted, #6e7681);
+    text-align: center;
+  }
+
+  .link-existing-expanded {
+    border: 1px solid var(--border-secondary, #30363d);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .link-existing-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--bg-secondary, #161b22);
+    border-bottom: 1px solid var(--border-secondary, #30363d);
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-secondary, #8b949e);
+  }
+
+  .link-existing-close {
+    background: none;
+    border: none;
+    font-size: 0.78rem;
+    color: var(--text-muted, #6e7681);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+    font-family: inherit;
+  }
+
+  .link-existing-close:hover {
+    color: var(--text-primary, #c9d1d9);
+    background: var(--bg-hover, #30363d);
+  }
+
+  .link-existing-expanded .character-picker {
+    padding: 8px;
+  }
+
+  .link-existing-expanded .selected-count {
+    padding-bottom: 8px;
+  }
+
+  .pov-disabled-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted, #6e7681);
+    font-style: italic;
+    padding: 10px 14px;
+    border: 1px dashed var(--border-secondary, #30363d);
+    border-radius: 8px;
+    margin: 0;
+    line-height: 1.5;
   }
 
   /* ── Footer ── */

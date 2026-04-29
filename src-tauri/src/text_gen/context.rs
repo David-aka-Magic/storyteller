@@ -534,6 +534,7 @@ pub struct CharacterInfo {
     pub personality: Option<String>,
     pub appearance: Option<String>, // sd_prompt
     pub default_clothing: Option<String>,
+    pub is_pov: bool,
 }
 
 /// The assembled context ready to send to Ollama.
@@ -577,16 +578,29 @@ fn build_pronoun_reminder(characters: &[CharacterInfo]) -> String {
 fn character_line(c: &CharacterInfo) -> String {
     let gender_str = c.gender.as_deref().unwrap_or("unknown");
     let pronouns = pronouns_for_gender(c.gender.as_deref());
-    format!(
-        "- {name} ({pronouns}): {gender}, age {age}. Personality: {personality}. Appearance: {appearance}. Clothing: {clothing}\n",
-        name = c.name,
-        pronouns = pronouns,
-        gender = gender_str,
-        age = c.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".to_string()),
-        personality = c.personality.as_deref().unwrap_or("not specified"),
-        appearance = c.appearance.as_deref().unwrap_or("not specified"),
-        clothing = c.default_clothing.as_deref().unwrap_or("not specified"),
-    )
+    if c.is_pov {
+        format!(
+            "- {name} [THE PLAYER / POV] ({pronouns}): {gender}, age {age}. Personality: {personality}. Appearance: {appearance}. Clothing: {clothing}\n",
+            name = c.name,
+            pronouns = pronouns,
+            gender = gender_str,
+            age = c.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            personality = c.personality.as_deref().unwrap_or("not specified"),
+            appearance = c.appearance.as_deref().unwrap_or("not specified"),
+            clothing = c.default_clothing.as_deref().unwrap_or("not specified"),
+        )
+    } else {
+        format!(
+            "- {name} ({pronouns}): {gender}, age {age}. Personality: {personality}. Appearance: {appearance}. Clothing: {clothing}\n",
+            name = c.name,
+            pronouns = pronouns,
+            gender = gender_str,
+            age = c.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            personality = c.personality.as_deref().unwrap_or("not specified"),
+            appearance = c.appearance.as_deref().unwrap_or("not specified"),
+            clothing = c.default_clothing.as_deref().unwrap_or("not specified"),
+        )
+    }
 }
 
 /// Build the character database section of the system prompt.
@@ -612,12 +626,25 @@ fn build_dual_character_section(
     scene_chars: &[CharacterInfo],
     all_chars: &[CharacterInfo],
 ) -> String {
-    // If there's no scene filter or they're the same set, use the simple section.
-    if scene_chars.is_empty() || scene_chars.len() == all_chars.len() {
-        return build_character_section(all_chars);
+    let pov_char: Option<&CharacterInfo> = all_chars.iter().find(|c| c.is_pov);
+    let mut section = String::new();
+
+    if let Some(pov) = pov_char {
+        section.push_str(
+            "POV CHARACTER (this is the player — when the user writes \"I\", \"me\", or gives \
+             a command like \"walk to the door\", they are controlling this character. Always \
+             include them in characters_in_scene unless they have explicitly left the location. \
+             They will NOT be drawn in scene images.):\n",
+        );
+        section.push_str(&character_line(pov));
+        section.push('\n');
     }
 
-    let mut section = String::new();
+    // If there's no scene filter or they're the same set, use the simple section.
+    if scene_chars.is_empty() || scene_chars.len() == all_chars.len() {
+        section.push_str(&build_character_section(all_chars));
+        return section;
+    }
 
     // Scene-filtered characters — what the LLM should actually use this turn
     section.push_str(
@@ -1239,6 +1266,7 @@ mod tests {
             personality: Some("Brave".to_string()),
             appearance: Some("Tall, dark hair".to_string()),
             default_clothing: Some("Leather armor".to_string()),
+            is_pov: false,
         }];
 
         let result = build_compressed_context(

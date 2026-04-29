@@ -67,6 +67,8 @@ pub struct CharacterProfile {
     pub weight_scale: Option<i32>,
     #[serde(default)]
     pub content_rating: Option<String>,
+    #[serde(default)]
+    pub is_pov: Option<bool>,
 }
 
 fn default_scale() -> Option<i32> {
@@ -83,6 +85,8 @@ pub struct CharacterLookup {
     pub default_clothing: Option<String>,
     pub art_style: Option<String>,
     pub gender: Option<String>,
+    #[serde(default)]
+    pub is_pov: bool,
 }
 
 /// Scene character from LLM output (matches your Ollama model's JSON)

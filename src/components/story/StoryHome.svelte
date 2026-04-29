@@ -12,7 +12,7 @@
 
   Callback props:
     onloadstory(storyId: number)
-    onnewstory({ title, description, characterIds })
+    onnewstory({ title, description, characterIds, contentRating, isPovStory })
     onopenesettings()
 -->
 <script lang="ts">
@@ -33,7 +33,7 @@
   export let availableCharacters: CharacterProfile[] = [];
 
   export let onloadstory: ((storyId: number) => void) | undefined = undefined;
-  export let onnewstory: ((data: { title: string; description: string; characterIds: number[]; contentRating: string }) => void) | undefined = undefined;
+  export let onnewstory: ((data: { title: string; description: string; characterIds: number[]; contentRating: string; isPovStory: boolean }) => void) | undefined = undefined;
   export let onopenesettings: (() => void) | undefined = undefined;
 
   // ── Local State ──
@@ -72,7 +72,7 @@
     deleteConfirmId = null;
   }
 
-  function handleCreate(data: { title: string; description: string; characterIds: number[]; contentRating: string }) {
+  function handleCreate(data: { title: string; description: string; characterIds: number[]; contentRating: string; isPovStory: boolean }) {
     showNewStoryModal = false;
     onnewstory?.(data);
   }
