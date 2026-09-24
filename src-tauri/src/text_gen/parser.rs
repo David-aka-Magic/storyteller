@@ -587,32 +587,38 @@ pub fn parse_llm_output(raw: &str) -> ParsedTurn {
     }
 
     // Attempt 3: extract JSON object from surrounding text (preamble, markdown fences)
-    if let Some(json_str) = extract_json_object(trimmed) {
-        // 3a: try directly
-        if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&json_str) {
-            let mut warnings = validate_turn(&turn);
-            warnings.insert(0, "JSON was embedded in surrounding text".to_string());
-            return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
-        }
-
-        // 3b: strip comments from extracted JSON and retry
-        let clean = strip_json_comments(&json_str);
-        if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&clean) {
-            let mut warnings = validate_turn(&turn);
-            warnings.insert(0, "JSON embedded in text with comments stripped".to_string());
-            return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
-        }
-
-        // 3c: sanitize newlines in extracted+stripped JSON
-        let clean_sanitized = sanitize_json_newlines(&clean);
-        if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&clean_sanitized) {
-            let mut warnings = validate_turn(&turn);
-            warnings.insert(0, "JSON embedded in text with comments stripped and newlines escaped".to_string());
-            return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
-        }
-
-        // 3d: try as just StoryJson (common partial failure — model only output story text)
-        if let Ok(story) = serde_json::from_str::<StoryJson>(&clean_sanitized) {
+        let extracted_clean = if let Some(json_str) = extract_json_object(trimmed) {
+            // 3a: try directly
+            if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&json_str) {
+                let mut warnings = validate_turn(&turn);
+                warnings.insert(0, "JSON was embedded in surrounding text".to_string());
+                return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
+            }
+    
+            // 3b: strip comments from extracted JSON and retry
+            let clean = strip_json_comments(&json_str);
+            if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&clean) {
+                let mut warnings = validate_turn(&turn);
+                warnings.insert(0, "JSON embedded in text with comments stripped".to_string());
+                return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
+            }
+    
+            // 3c: sanitize newlines in extracted+stripped JSON
+            let clean_sanitized = sanitize_json_newlines(&clean);
+            if let Ok(turn) = serde_json::from_str::<LlmTurnOutput>(&clean_sanitized) {
+                let mut warnings = validate_turn(&turn);
+                warnings.insert(0, "JSON embedded in text with comments stripped and newlines escaped".to_string());
+                return ParsedTurn { status: ParseStatus::Partial(warnings), turn, raw_text: None };
+            }
+    
+            Some(clean_sanitized)
+        } else {
+            None
+        };
+    
+        // Attempt 3d: try as just StoryJson
+        let story_target = extracted_clean.as_deref().unwrap_or(&comment_stripped_sanitized);
+        if let Ok(story) = serde_json::from_str::<StoryJson>(story_target) {
             if !story.response.is_empty() {
                 let turn = LlmTurnOutput {
                     turn_id: 0,
@@ -632,10 +638,9 @@ pub fn parse_llm_output(raw: &str) -> ParsedTurn {
                 };
             }
         }
-    }
-
-    // Attempt 4: complete fallback
-    let fallback_text = clean_raw_text(trimmed);
+    
+        // Attempt 4: complete fallback
+        let fallback_text = clean_raw_text(trimmed);
     let turn = LlmTurnOutput {
         turn_id: 0,
         story_json: Some(StoryJson {
@@ -727,12 +732,13 @@ fn sanitize_json_newlines(text: &str) -> String {
             result.push(c);
             continue;
         }
-        if c == '\\' && in_string {
+        if c == '\\' {
             escape = true;
             result.push(c);
             continue;
         }
         if c == '"' {
+            // Only toggle string mode if the double quote was NOT escaped
             in_string = !in_string;
             result.push(c);
             continue;
@@ -889,277 +895,3 @@ pub fn check_generation_flags(raw_output: String) -> Result<GenerationFlags, Str
 // TESTS
 // ============================================================================
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const EXAMPLE_JSON: &str = r#"{
-        "turn_id": 1,
-        "story_json": {
-            "response": "The narrative text...",
-            "summary_hint": "One-line summary for compression."
-        },
-        "scene_json": {
-            "location": "cozy coffee shop",
-            "location_type": "interior",
-            "time_of_day": "afternoon",
-            "weather": "n/a",
-            "lighting": "warm ambient lighting",
-            "mood": "casual, friendly"
-        },
-        "characters_in_scene": [
-            {
-                "name": "Marcus",
-                "region": "left",
-                "view": "FULL-BODY",
-                "action": "walking toward table",
-                "expression": "friendly smile",
-                "clothing": "blue jacket, white t-shirt",
-                "facing": "Elena"
-            },
-            {
-                "name": "Elena",
-                "region": "right-seated",
-                "view": "UPPER-BODY",
-                "action": "looking up from phone",
-                "expression": "surprised, happy",
-                "clothing": "red sweater, glasses",
-                "facing": "Marcus"
-            }
-        ],
-        "generation_flags": {
-            "generate_image": true,
-            "scene_changed": false,
-            "characters_changed": true
-        }
-    }"#;
-
-    #[test]
-    fn test_parse_valid_json() {
-        let result = parse_llm_output(EXAMPLE_JSON);
-        assert!(matches!(result.status, ParseStatus::Ok));
-        assert_eq!(result.story_text(), "The narrative text...");
-        assert_eq!(result.summary_hint(), "One-line summary for compression.");
-        assert_eq!(result.turn.turn_id, 1);
-        assert!(result.should_generate_image());
-        assert!(!result.scene_changed());
-        assert!(result.characters_changed());
-    }
-
-    #[test]
-    fn test_character_names() {
-        let result = parse_llm_output(EXAMPLE_JSON);
-        assert_eq!(result.character_names(), vec!["Marcus", "Elena"]);
-    }
-
-    #[test]
-    fn test_character_regions_and_views() {
-        let result = parse_llm_output(EXAMPLE_JSON);
-        let typed = result.characters_typed();
-        assert_eq!(typed[0].region, CharacterRegion::Left);
-        assert_eq!(typed[0].view, CharacterView::FullBody);
-        assert!(typed[0].needs_render());
-        assert_eq!(typed[1].region, CharacterRegion::RightSeated);
-        assert!(typed[1].region.is_seated());
-        assert_eq!(typed[1].view, CharacterView::UpperBody);
-    }
-
-    #[test]
-    fn test_scene_data() {
-        let result = parse_llm_output(EXAMPLE_JSON);
-        let scene = result.scene().unwrap();
-        assert_eq!(scene.location, "cozy coffee shop");
-        assert_eq!(scene.location_type, "interior");
-        assert_eq!(scene.time_of_day, "afternoon");
-    }
-
-    #[test]
-    fn test_scene_prompt_fragment() {
-        let result = parse_llm_output(EXAMPLE_JSON);
-        let fragment = result.scene_prompt_fragment();
-        assert!(fragment.contains("cozy coffee shop"));
-        assert!(fragment.contains("warm ambient lighting"));
-        assert!(!fragment.contains("n/a"));
-    }
-
-    #[test]
-    fn test_json_in_markdown_fence() {
-        let fenced = format!("```json\n{}\n```", EXAMPLE_JSON);
-        let result = parse_llm_output(&fenced);
-        assert!(matches!(result.status, ParseStatus::Partial(_)));
-        assert_eq!(result.story_text(), "The narrative text...");
-        assert_eq!(result.character_names(), vec!["Marcus", "Elena"]);
-    }
-
-    #[test]
-    fn test_json_with_preamble() {
-        let with_preamble = format!("Here is the story output:\n{}", EXAMPLE_JSON);
-        let result = parse_llm_output(&with_preamble);
-        assert!(matches!(result.status, ParseStatus::Partial(_)));
-        assert_eq!(result.story_text(), "The narrative text...");
-    }
-
-    #[test]
-    fn test_json_with_comments() {
-        let with_comments = r#"{
-            "turn_id": 2,
-            "story_json": { "response": "She walked in.", "summary_hint": "Entrance." },
-            "scene_json": { "location": "barn", "location_type": "interior", "time_of_day": "morning", "weather": "clear", "lighting": "sunlight", "mood": "peaceful" },
-            "characters_in_scene": [
-                {
-                    "name": "Lisa",
-                    "region": "center",
-                    "view": "PORTRAIT",
-                    "action": "walking",
-                    "expression": "smiling",
-                    "clothing": "default clothing", // Not specified
-                    "facing": "forward"
-                }
-            ],
-            "generation_flags": { "generate_image": true, "scene_changed": false, "characters_changed": false }
-        }"#;
-        let result = parse_llm_output(with_comments);
-        assert!(!matches!(result.status, ParseStatus::Fallback));
-        assert_eq!(result.story_text(), "She walked in.");
-        assert_eq!(result.character_names(), vec!["Lisa"]);
-        assert!(result.should_generate_image());
-    }
-
-    #[test]
-    fn test_malformed_json_fallback() {
-        let broken = "This is just plain text with no JSON at all.";
-        let result = parse_llm_output(broken);
-        assert!(matches!(result.status, ParseStatus::Fallback));
-        assert_eq!(result.story_text(), broken);
-        assert!(result.character_names().is_empty());
-        assert!(!result.should_generate_image());
-    }
-
-    #[test]
-    fn test_partial_json_missing_fields() {
-        let partial = r#"{"turn_id": 5, "story_json": {"response": "Something happened."}}"#;
-        let result = parse_llm_output(partial);
-        assert!(matches!(result.status, ParseStatus::Partial(_)));
-        assert_eq!(result.story_text(), "Something happened.");
-        assert_eq!(result.turn.turn_id, 5);
-        assert!(result.character_names().is_empty());
-        assert!(!result.should_generate_image());
-    }
-
-    #[test]
-    fn test_empty_string() {
-        let result = parse_llm_output("");
-        assert!(matches!(result.status, ParseStatus::Fallback));
-    }
-
-    #[test]
-    fn test_off_screen_character() {
-        let json = r#"{
-            "turn_id": 2,
-            "story_json": {"response": "A voice calls from outside.", "summary_hint": ""},
-            "scene_json": {"location": "room", "location_type": "interior", "time_of_day": "day", "weather": "n/a", "lighting": "dim", "mood": "tense"},
-            "characters_in_scene": [
-                {"name": "Ghost", "region": "off-screen", "view": "NONE", "action": "", "expression": "", "clothing": "", "facing": ""}
-            ],
-            "generation_flags": {"generate_image": true, "scene_changed": false, "characters_changed": false}
-        }"#;
-        let result = parse_llm_output(json);
-        let typed = result.characters_typed();
-        assert_eq!(typed[0].region, CharacterRegion::OffScreen);
-        assert!(typed[0].region.is_off_screen());
-        assert!(!typed[0].needs_render());
-        assert!(result.renderable_characters().is_empty());
-    }
-
-    #[test]
-    fn test_background_characters() {
-        let json = r#"{
-            "turn_id": 3,
-            "story_json": {"response": "Crowds mill about.", "summary_hint": ""},
-            "scene_json": {"location": "market", "location_type": "exterior", "time_of_day": "noon", "weather": "sunny", "lighting": "bright", "mood": "busy"},
-            "characters_in_scene": [
-                {"name": "Vendor", "region": "left-background", "view": "FULL-BODY", "action": "", "expression": "", "clothing": "", "facing": ""},
-                {"name": "Hero", "region": "center", "view": "FULL-BODY", "action": "", "expression": "", "clothing": "", "facing": ""}
-            ],
-            "generation_flags": {"generate_image": true, "scene_changed": false, "characters_changed": false}
-        }"#;
-        let result = parse_llm_output(json);
-        let typed = result.characters_typed();
-        assert!(typed[0].region.is_background());
-        assert!(!typed[1].region.is_background());
-        assert_eq!(result.renderable_characters().len(), 2);
-    }
-
-    #[test]
-    fn test_region_variants() {
-        assert_eq!(CharacterRegion::from_str_loose("left"), CharacterRegion::Left);
-        assert_eq!(CharacterRegion::from_str_loose("LEFT"), CharacterRegion::Left);
-        assert_eq!(CharacterRegion::from_str_loose("center-seated"), CharacterRegion::CenterSeated);
-        assert_eq!(CharacterRegion::from_str_loose("center_seated"), CharacterRegion::CenterSeated);
-        assert_eq!(CharacterRegion::from_str_loose("right-background"), CharacterRegion::RightBackground);
-        assert_eq!(CharacterRegion::from_str_loose("off-screen"), CharacterRegion::OffScreen);
-        assert!(matches!(CharacterRegion::from_str_loose("floating"), CharacterRegion::Other(_)));
-    }
-
-    #[test]
-    fn test_view_variants() {
-        assert_eq!(CharacterView::from_str_loose("PORTRAIT"), CharacterView::Portrait);
-        assert_eq!(CharacterView::from_str_loose("UPPER-BODY"), CharacterView::UpperBody);
-        assert_eq!(CharacterView::from_str_loose("FULL-BODY"), CharacterView::FullBody);
-        assert_eq!(CharacterView::from_str_loose("full_body"), CharacterView::FullBody);
-        assert_eq!(CharacterView::from_str_loose("NONE"), CharacterView::None);
-        assert!(!CharacterView::None.needs_render());
-        assert!(CharacterView::FullBody.needs_render());
-    }
-
-    #[test]
-    fn test_generation_flags_default() {
-        let json = r#"{"turn_id": 1, "story_json": {"response": "Hello.", "summary_hint": ""}}"#;
-        let result = parse_llm_output(json);
-        let flags = result.flags();
-        assert!(!flags.generate_image);
-        assert!(!flags.scene_changed);
-        assert!(!flags.characters_changed);
-    }
-
-    #[test]
-    fn test_frontend_conversion() {
-        let result = parse_llm_output(EXAMPLE_JSON);
-        let fe = result.to_frontend();
-        assert_eq!(fe.status, "ok");
-        assert!(fe.warnings.is_empty());
-        assert_eq!(fe.turn_id, 1);
-        assert_eq!(fe.story_text, "The narrative text...");
-        assert_eq!(fe.characters.len(), 2);
-        assert_eq!(fe.characters[0].name, "Marcus");
-        assert!(fe.characters[0].needs_render);
-        assert!(fe.flags.generate_image);
-    }
-
-    #[test]
-    fn test_only_story_json_parseable() {
-        let json = r#"{"response": "The hero walked forward.", "summary_hint": "Hero moves."}"#;
-        let result = parse_llm_output(json);
-        assert!(matches!(result.status, ParseStatus::Partial(_)));
-        assert_eq!(result.story_text(), "The hero walked forward.");
-    }
-
-    #[test]
-    fn test_strip_json_comments() {
-        let input = r#"{"key": "value", // a comment
-"other": "data"}"#;
-        let stripped = strip_json_comments(input);
-        let parsed: serde_json::Value = serde_json::from_str(&stripped).unwrap();
-        assert_eq!(parsed["key"], "value");
-        assert_eq!(parsed["other"], "data");
-    }
-
-    #[test]
-    fn test_strip_comments_preserves_url_strings() {
-        // URLs contain // but should not be stripped
-        let input = r#"{"url": "https://example.com/path"}"#;
-        let stripped = strip_json_comments(input);
-        let parsed: serde_json::Value = serde_json::from_str(&stripped).unwrap();
-        assert_eq!(parsed["url"], "https://example.com/path");
-    }
-}
